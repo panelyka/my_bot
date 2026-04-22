@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Game Bot</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>🤖 Game Bot v22.0</h1>
+      <p>Автобот для браузерной игры</p>
+    </div>
+
+    <div class="section">
+      <h2>📊 Статистика</h2>
+      <div id="stats-display">
+        <div class="stat">Загрузка...</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>📦 Последние предметы</h2>
+      <div id="items-display" style="max-height: 150px; overflow-y: auto;">
+        <div class="stat">—</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>👾 Последние мобы</h2>
+      <div id="enemies-display" style="max-height: 150px; overflow-y: auto;">
+        <div class="stat">—</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>📋 Логи</h2>
+      <button class="btn btn-primary" id="view-logs" style="width: 100%; margin-bottom: 5px;">Просмотр в консоли</button>
+      <button class="btn btn-primary" id="download-logs" style="width: 100%;">Скачать логи</button>
+      <button class="btn btn-danger" id="clear-logs" style="width: 100%; margin-top: 5px;">Очистить логи</button>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

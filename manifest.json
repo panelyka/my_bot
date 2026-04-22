@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Game Bot",
+  "version": "22.0",
+  "description": "Автобот для браузерной игры",
+  "permissions": ["storage", "activeTab", "scripting", "notifications"],
+  "host_permissions": ["https://game.league17.ru/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://game.league17.ru/*"],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Game Bot"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["inject.js", "sounds/heal.mp3"],
+      "matches": ["https://game.league17.ru/*"]
+    }
+  ]
+}

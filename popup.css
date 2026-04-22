@@ -1,0 +1,91 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  width: 380px;
+  background: linear-gradient(135deg, #1a1a2e, #16213e);
+  color: #fff;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  font-size: 12px;
+}
+
+.container {
+  padding: 15px;
+}
+
+.header {
+  text-align: center;
+  margin-bottom: 15px;
+  border-bottom: 1px solid rgba(79, 163, 245, 0.3);
+  padding-bottom: 10px;
+}
+
+.header h1 {
+  font-size: 16px;
+  color: #4fa3f5;
+}
+
+.header p {
+  font-size: 10px;
+  color: #888;
+}
+
+.section {
+  margin-bottom: 15px;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(79, 163, 245, 0.2);
+}
+
+.section h2 {
+  font-size: 12px;
+  color: #4fa3f5;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+
+.stat {
+  margin: 4px 0;
+  padding: 4px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.btn {
+  padding: 6px 10px;
+  border: none;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-primary {
+  background: #4fa3f5;
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: #3d89d4;
+}
+
+.btn-danger {
+  background: #e74c3c;
+  color: #fff;
+}
+
+.btn-danger:hover {
+  background: #c0392b;
+}
+
+#stats-display,
+#items-display,
+#enemies-display {
+  font-size: 11px;
+}

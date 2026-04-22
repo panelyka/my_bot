@@ -22,6 +22,8 @@
   let fightStarted = false;
   let captchaPaused = false;
   let previousFightState = false;
+  let lastSeenEnemyId = null;
+  let lastSeenEnemyName = "";
   
   // COMBO VARIABLES
   let isExecutingCombo = false;
@@ -151,16 +153,30 @@
     const match = src.match(/\/(\d+)(?:_.*)?\.(?:png|gif)(?:\?.*)?$/i);
     return match ? match[1] : null;
   }
+
+  function updateCurrentEnemySnapshot() {
+    const enemyImg = document.querySelector("#divFightH img[src*='/mnst/']");
+    const enemyId = extractMonsterIdFromSrc(enemyImg?.src);
+    if (enemyId) lastSeenEnemyId = enemyId;
+
+    const nameEl = document.querySelector("#divFightH .name");
+    const enemyName = nameEl?.textContent?.trim().toLowerCase() || "";
+    if (enemyName) lastSeenEnemyName = enemyName;
+  }
+
+  function resetCurrentEnemySnapshot() {
+    lastSeenEnemyId = null;
+    lastSeenEnemyName = "";
+  }
   
   function getEnemyId() {
-    const img = document.querySelector("#divFightH img[src*='/mnst/']");
-    if (!img) return null;
-    return extractMonsterIdFromSrc(img.src);
+    updateCurrentEnemySnapshot();
+    return lastSeenEnemyId;
   }
   
   function getCurrentEnemy() {
-    const nameEl = document.querySelector("#divFightH .name");
-    return nameEl ? nameEl.textContent.trim().toLowerCase() : "";
+    updateCurrentEnemySnapshot();
+    return lastSeenEnemyName;
   }
   
   function getAttackElements() {
@@ -398,19 +414,21 @@
   // ===== ПРАВИЛА АТАК =====
   function attackByRules() {
     const enemy = getCurrentEnemy();
+    const enemyId = getEnemyId();
     
     for (let i = 0; i < 4; i++) {
       const rule = simpleRules[i];
       if (!rule) continue;
       
       const countLimit = parseInt(rule.count) || 0;
-      const against = (rule.against || "").toLowerCase();
+      const against = (rule.against || "").trim().toLowerCase();
+      const matchesEnemy = against && (enemy.includes(against) || String(enemyId || "") === against);
       
       if (countLimit > 0 && attackCounter[i] >= countLimit) continue;
       if (getPP(i) <= 0) continue;
       
-      // Если указано имя врага
-      if (against && enemy.includes(against)) {
+      // Если указано имя или ID врага
+      if (matchesEnemy) {
         if (clickAttack(i)) {
           attackCounter[i] = (attackCounter[i] || 0) + 1;
           log(`📋 Правило: атака ${i+1} против "${against}" (${attackCounter[i]}/${countLimit})`, 'RULE');
@@ -505,6 +523,13 @@
     const wrap = document.getElementById("gb-rules-list");
     if (!wrap) return;
     wrap.innerHTML = '';
+
+    const updateRule = (idx, field, value) => {
+      if (!simpleRules[idx]) simpleRules[idx] = {};
+      simpleRules[idx][field] = value;
+      saveData();
+    };
+
     for (let i = 0; i < 4; i++) {
       const rule = simpleRules[i] || { count: "", against: "" };
       const row = document.createElement("div");
@@ -513,21 +538,15 @@
         <div style="min-width: 50px; color:#4fa3f5;">Атака ${i+1}:</div>
         <input type="number" id="rule_count_${i}" placeholder="кол-во" value="${rule.count}" style="width:55px; padding:4px; background:#111; border:1px solid #555; color:#2ecc71; border-radius:4px;">
         <div style="color:#888;">→</div>
-        <input type="text" id="rule_against_${i}" placeholder="имя врага (пусто = все)" value="${rule.against}" style="flex:1; padding:4px; background:#111; border:1px solid #555; color:#f39c12; border-radius:4px;">
+        <input type="text" id="rule_against_${i}" placeholder="имя или ID врага (пусто = все)" value="${rule.against}" style="flex:1; padding:4px; background:#111; border:1px solid #555; color:#f39c12; border-radius:4px;">
       `;
       wrap.appendChild(row);
       
-      document.getElementById(`rule_count_${i}`).onchange = (idx => e => {
-        if (!simpleRules[idx]) simpleRules[idx] = {};
-        simpleRules[idx].count = e.target.value;
-        saveData();
-      })(i);
+      document.getElementById(`rule_count_${i}`).oninput = (idx => e => updateRule(idx, "count", e.target.value))(i);
+      document.getElementById(`rule_count_${i}`).onchange = (idx => e => updateRule(idx, "count", e.target.value))(i);
       
-      document.getElementById(`rule_against_${i}`).onchange = (idx => e => {
-        if (!simpleRules[idx]) simpleRules[idx] = {};
-        simpleRules[idx].against = e.target.value;
-        saveData();
-      })(i);
+      document.getElementById(`rule_against_${i}`).oninput = (idx => e => updateRule(idx, "against", e.target.value))(i);
+      document.getElementById(`rule_against_${i}`).onchange = (idx => e => updateRule(idx, "against", e.target.value))(i);
     }
   }
   
@@ -918,6 +937,8 @@
     checkCaptcha();
     getCurrentLocation();
     if (!auto) return;
+
+    updateCurrentEnemySnapshot();
     
     detectDrop();
     
@@ -927,6 +948,8 @@
     const inFight = isInFight();
     if (inFight !== previousFightState) {
       if (inFight) {
+        resetCurrentEnemySnapshot();
+        updateCurrentEnemySnapshot();
         lastAttackTime = Date.now();
         log("⚔️ НОВЫЙ БОЙ НАЧАЛСЯ!", 'FIGHT');
       } else {
@@ -934,6 +957,7 @@
         healingInProgress = false;
         isExecutingCombo = false;
         log("✅ Бой завершён", 'FIGHT');
+        resetCurrentEnemySnapshot();
       }
       previousFightState = inFight;
       updateUI();

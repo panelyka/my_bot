@@ -267,6 +267,11 @@
     }
     return null;
   }
+
+  function resetAttackCounters() {
+    attackCounter = {};
+    needHealAfterLimit = false;
+  }
   
   async function doHeal() {
     if (healingInProgress) return false;
@@ -297,6 +302,7 @@
     
     // ВКЛЮЧАЕМ ДИКИХ МОНСТРОВ ОБРАТНО
     setWildMonstersButton(true);
+    resetAttackCounters();
     
     healingInProgress = false;
     log("=== ЛЕЧЕНИЕ ЗАВЕРШЕНО ===", 'HEAL');
@@ -420,38 +426,32 @@
       const rule = simpleRules[i];
       if (!rule) continue;
       
-      const countLimit = parseInt(rule.count) || 0;
+      const rawCount = String(rule.count ?? "").trim();
+      const countLimit = parseInt(rawCount) || 0;
+      const hasLimit = rawCount !== "" && countLimit > 0;
       const against = (rule.against || "").trim().toLowerCase();
-      const matchesEnemy = against && (enemy.includes(against) || String(enemyId || "") === against);
+      const matchesEnemy = !against || enemy.includes(against) || String(enemyId || "") === against;
+      const usageCount = attackCounter[i] || 0;
       
-      if (countLimit > 0 && attackCounter[i] >= countLimit) continue;
+      if (!matchesEnemy) continue;
+      if (hasLimit && usageCount >= countLimit) continue;
       if (getPP(i) <= 0) continue;
       
-      // Если указано имя или ID врага
-      if (matchesEnemy) {
-        if (clickAttack(i)) {
-          attackCounter[i] = (attackCounter[i] || 0) + 1;
-          log(`📋 Правило: атака ${i+1} против "${against}" (${attackCounter[i]}/${countLimit})`, 'RULE');
-          
-          if (countLimit > 0 && attackCounter[i] >= countLimit) {
-            log(`🏥 Лимит атаки ${i+1} достигнут, требуется лечение`, 'HEAL');
-            needHealAfterLimit = true;
-          }
-          return true;
+      if (clickAttack(i)) {
+        attackCounter[i] = usageCount + 1;
+
+        if (against) {
+          log(`📋 Правило: атака ${i+1} против "${against}" (${attackCounter[i]}${hasLimit ? `/${countLimit}` : ""})`, 'RULE');
+        } else {
+          log(`📋 Правило: атака ${i+1} по всем врагам (${attackCounter[i]}${hasLimit ? `/${countLimit}` : ""})`, 'RULE');
         }
-      }
-      // Если имя не указано, но есть лимит - бьём всех подряд
-      else if (!against && countLimit > 0 && attackCounter[i] < countLimit) {
-        if (clickAttack(i)) {
-          attackCounter[i] = (attackCounter[i] || 0) + 1;
-          log(`📋 Лимит: атака ${i+1} (${attackCounter[i]}/${countLimit}) - бьём всех`, 'RULE');
-          
-          if (attackCounter[i] >= countLimit) {
-            log(`🏥 Лимит атаки ${i+1} достигнут, требуется лечение`, 'HEAL');
-            needHealAfterLimit = true;
-          }
-          return true;
+
+        if (hasLimit && attackCounter[i] >= countLimit) {
+          log(`🏥 Лимит атаки ${i+1} достигнут, требуется лечение`, 'HEAL');
+          needHealAfterLimit = true;
         }
+
+        return true;
       }
     }
     return false;

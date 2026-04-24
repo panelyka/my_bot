@@ -43,6 +43,8 @@
   let moveDelay = 2000;
   let comboDelay = 1500;
   let currentLocation = "";
+  let suppressAutoHealUntilNextFight = false;
+  let healRetryBlockedUntil = 0;
   
   // Флаг для отслеживания необходимости лечения после лимита атак
   let needHealAfterLimit = false;
@@ -280,36 +282,74 @@
     
     // ОТКЛЮЧАЕМ ДИКИХ МОНСТРОВ
     setWildMonstersButton(false);
-    
-    const paths = getHealPaths();
-    if (!paths?.forward) {
-      log("Нет пути к лекарю!", 'ERROR');
+
+    try {
+      const paths = getHealPaths();
+      if (!paths?.forward) {
+        log("Нет пути к лекарю!", 'ERROR');
+        healRetryBlockedUntil = Date.now() + 5000;
+        return false;
+      }
+
+      if (!await runPath(paths.forward)) {
+        log("Не удалось дойти до лекаря", 'ERROR');
+        healRetryBlockedUntil = Date.now() + 5000;
+        return false;
+      }
+
+      await delay(500);
+
+      if (!await performHealSequence()) {
+        healRetryBlockedUntil = Date.now() + 5000;
+        return false;
+      }
+
+      if (paths.back && !await runPath(paths.back)) {
+        log("Не удалось вернуться по обратному пути", 'ERROR');
+      }
+
+      suppressAutoHealUntilNextFight = true;
+      healRetryBlockedUntil = 0;
+      resetAttackCounters();
+
+      log("=== ЛЕЧЕНИЕ ЗАВЕРШЕНО ===", 'HEAL');
+      return true;
+    } finally {
       setWildMonstersButton(true);
       healingInProgress = false;
+    }
+  }
+
+  async function performHealSequence() {
+    const healBtn = document.querySelector(".btnLocHeal");
+    if (!healBtn) {
+      log("Кнопка лечения не найдена. Проверь путь к лекарю.", 'ERROR');
       return false;
     }
-    
-    await runPath(paths.forward);
-    await delay(500);
-    
-    const healBtn = document.querySelector(".btnLocHeal");
-    if (healBtn) { healBtn.click(); await delay(1000); }
-    
+
+    healBtn.click();
+
+    const healAllVisible = await waitFor(() => !!document.querySelector(".menuHealAll"), 2000);
+    if (!healAllVisible) {
+      log("Меню лечения не открылось", 'ERROR');
+      return false;
+    }
+
     const healAllBtn = document.querySelector(".menuHealAll");
-    if (healAllBtn) { healAllBtn.click(); await delay(2000); }
-    
-    if (paths.back) await runPath(paths.back);
-    
-    // ВКЛЮЧАЕМ ДИКИХ МОНСТРОВ ОБРАТНО
-    setWildMonstersButton(true);
-    resetAttackCounters();
-    
-    healingInProgress = false;
-    log("=== ЛЕЧЕНИЕ ЗАВЕРШЕНО ===", 'HEAL');
+    if (!healAllBtn) {
+      log("Кнопка полного лечения не найдена", 'ERROR');
+      return false;
+    }
+
+    healAllBtn.click();
+    await delay(2000);
     return true;
   }
   
   function shouldHealNow() {
+    if (suppressAutoHealUntilNextFight) return false;
+    if (Date.now() < healRetryBlockedUntil) return false;
+
     const hpEl = document.querySelector("#divFightI .barHP div");
     if (hpEl) {
       const hp = parseFloat(hpEl.style.width);
@@ -948,6 +988,8 @@
     const inFight = isInFight();
     if (inFight !== previousFightState) {
       if (inFight) {
+        suppressAutoHealUntilNextFight = false;
+        healRetryBlockedUntil = 0;
         resetCurrentEnemySnapshot();
         updateCurrentEnemySnapshot();
         lastAttackTime = Date.now();

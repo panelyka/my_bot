@@ -1,4 +1,21 @@
 // Service Worker для расширения
+function createStatsSnapshot(source = {}) {
+  return {
+    kills: Number(source.kills) || 0,
+    credits: Number(source.credits) || 0,
+    fights: Number(source.fights) || 0,
+    items: source.items && typeof source.items === 'object' ? { ...source.items } : {},
+    enemies: Array.isArray(source.enemies) ? [...source.enemies] : []
+  };
+}
+
+function withActiveGameTab(callback) {
+  chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
+    const tab = (tabs || []).find(item => item.url?.includes('league17.ru'));
+    callback(tab || null);
+  });
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   console.log("Game Bot Extension installed");
   
@@ -41,7 +58,32 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     },
     getStats: () => {
       chrome.storage.local.get(['stats'], (result) => {
-        sendResponse(result.stats || {});
+        sendResponse(createStatsSnapshot(result.stats || {}));
+      });
+      return true;
+    },
+    syncStats: () => {
+      const nextStats = createStatsSnapshot(request.data?.stats || {});
+      chrome.storage.local.set({ stats: nextStats }, () => {
+        sendResponse({ success: true, stats: nextStats });
+      });
+      return true;
+    },
+    resetStats: () => {
+      withActiveGameTab((tab) => {
+        if (!tab?.id) {
+          sendResponse({ success: false, error: 'active-game-tab-not-found' });
+          return;
+        }
+
+        chrome.tabs.sendMessage(tab.id, { action: 'resetStats' }, (response) => {
+          if (chrome.runtime.lastError) {
+            sendResponse({ success: false, error: chrome.runtime.lastError.message });
+            return;
+          }
+
+          sendResponse(response || { success: true });
+        });
       });
       return true;
     },

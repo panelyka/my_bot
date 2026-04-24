@@ -115,13 +115,21 @@ setInterval(autoPressEnter, 300);
 const overrideScript = document.createElement('script');
 overrideScript.textContent = `
   (function() {
+    window.__gameBotAllowSurrenderConfirmUntil = 0;
+
     // Переопределяем confirm (никогда не подтверждаем сдачу)
     const originalConfirm = window.confirm;
     window.confirm = function(message) {
       // Если сообщение о сдаче - возвращаем false (отмена)
       if (message && message.toLowerCase().includes("сдаться")) {
-        console.log("🚫 AUTO-CANCEL surrender confirm");
-        return false;
+        const allowSurrender = Number(window.__gameBotAllowSurrenderConfirmUntil || 0) > Date.now();
+        if (!allowSurrender) {
+          console.log("🚫 AUTO-CANCEL surrender confirm");
+          return false;
+        }
+        window.__gameBotAllowSurrenderConfirmUntil = 0;
+        console.log("✅ AUTO-ALLOW surrender confirm");
+        return true;
       }
       console.log("✅ AUTO-CONFIRM:", message);
       return true;
@@ -162,6 +170,14 @@ window.addEventListener('message', (event) => {
         data: response
       }, '*');
     });
+  }
+});
+
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'resetStats') {
+    window.postMessage({ type: 'TO_GAME_BOT', action: 'resetStats' }, '*');
+    sendResponse({ success: true });
+    return true;
   }
 });
 

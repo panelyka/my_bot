@@ -8,6 +8,10 @@ async function sendMessage(action, data = {}) {
   });
 }
 
+function getDropItemsTotal(items = {}) {
+  return Object.values(items).reduce((total, amount) => total + (parseInt(amount, 10) || 0), 0);
+}
+
 async function updateStats() {
   const stats = await sendMessage('getStats');
   const display = document.getElementById('stats-display');
@@ -16,6 +20,7 @@ async function updateStats() {
     display.innerHTML = `
       <div class="stat">🎯 Побед: ${stats.kills || 0}</div>
       <div class="stat">💰 Кредитов: ${stats.credits || 0}</div>
+      <div class="stat">📦 Вещей: ${getDropItemsTotal(stats.items || {})}</div>
       <div class="stat">⚔️ Боёв: ${stats.fights || 0}</div>
     `;
   } else {
@@ -86,9 +91,24 @@ async function clearLogs() {
   }
 }
 
+async function resetStats() {
+  if (!confirm('Сбросить убийства и дроп? Кредиты и количество боёв останутся.')) return;
+
+  const response = await sendMessage('resetStats');
+  if (!response?.success) {
+    alert('Не удалось сбросить статистику. Откройте вкладку игры и попробуйте снова.');
+    return;
+  }
+
+  await new Promise(resolve => setTimeout(resolve, 300));
+  await updateStats();
+  alert('Убийства и дроп сброшены');
+}
+
 document.getElementById('view-logs').onclick = viewLogs;
 document.getElementById('download-logs').onclick = downloadLogs;
 document.getElementById('clear-logs').onclick = clearLogs;
+document.getElementById('reset-stats').onclick = resetStats;
 
 updateStats();
 setInterval(updateStats, 3000);

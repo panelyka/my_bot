@@ -16,6 +16,9 @@
   let auto = true;
   let healPath = "";
   let healPathBack = "";
+  let surrenderEnemyIds = "";
+  let afkEnemyIds = "";
+  let pauseOnShiny = true;
   let healing = false;
   let healingInProgress = false;
   let lastAttackTime = 0;
@@ -24,6 +27,8 @@
   let previousFightState = false;
   let lastSeenEnemyId = null;
   let lastSeenEnemyName = "";
+  let handledEncounterAction = "";
+  let surrenderInProgress = false;
   
   // COMBO VARIABLES
   let isExecutingCombo = false;
@@ -32,7 +37,8 @@
   let expConfig = { attack: "", swap: "", targetLevel: 0 };
   
   // STATS
-  let stats = { kills: 0, credits: 0, fights: 0, items: {}, enemies: [] };
+  const DEFAULT_STATS = Object.freeze({ kills: 0, credits: 0, fights: 0, items: {}, enemies: [] });
+  let stats = createStatsSnapshot();
   let lastAlert = "";
   let attackCounter = {};
   
@@ -82,6 +88,13 @@
     const icons = { INFO: "📌", WARN: "⚠️", ERROR: "❌", FIGHT: "⚔️", HEAL: "🏥", MOVE: "🚶", COMBO: "🔥", RULE: "📋", SWAP: "🔄", EXP: "⭐" };
     console.log(`${icons[type] || "📌"} [${time}] ${message}`);
   }
+
+  function updateAutoButtonUI() {
+    const autoBtn = document.getElementById("gb-auto-btn");
+    if (!autoBtn) return;
+    autoBtn.textContent = auto ? "▶️ ON" : "⏸️ OFF";
+    autoBtn.style.background = auto ? "#2ecc71" : "#e74c3c";
+  }
   
   // ===== УПРАВЛЕНИЕ ДИКИМИ МОНСТРАМИ =====
   function setWildMonstersButton(enabled) {
@@ -99,6 +112,184 @@
       }
     } catch(e) { log(`Ошибка: ${e}`, "ERROR"); }
   }
+
+  function createStatsSnapshot(source = {}) {
+    return {
+      kills: Number(source.kills) || 0,
+      credits: Number(source.credits) || 0,
+      fights: Number(source.fights) || 0,
+      items: source.items && typeof source.items === "object" ? { ...source.items } : {},
+      enemies: Array.isArray(source.enemies) ? [...source.enemies] : []
+    };
+  }
+
+  function getDropItemsTotal() {
+    return Object.values(stats.items || {}).reduce((total, amount) => total + (parseInt(amount, 10) || 0), 0);
+  }
+
+  function syncStatsToExtension() {
+    try {
+      window.postMessage({
+        type: 'FROM_GAME_BOT',
+        action: 'syncStats',
+        data: { stats: createStatsSnapshot(stats) }
+      }, '*');
+    } catch (error) {
+      log(`Ошибка syncStats: ${error}`, 'WARN');
+    }
+  }
+
+  function resetSessionStats(reason = 'manual') {
+    stats = {
+      ...createStatsSnapshot(DEFAULT_STATS),
+      credits: stats.credits,
+      fights: stats.fights
+    };
+    lastAlert = "";
+    saveData();
+    updateUI();
+    log(reason === 'init' ? 'Статистика убийств и дропа сброшена при запуске' : 'Статистика убийств и дропа сброшена', 'INFO');
+  }
+
+  function parseEnemyIdList(value) {
+    return String(value || "")
+      .split(/[\s,;]+/)
+      .map(item => item.trim())
+      .filter(Boolean);
+  }
+
+  function shouldSurrenderForEnemy(enemyId) {
+    return parseEnemyIdList(surrenderEnemyIds).includes(String(enemyId || ""));
+  }
+
+  function shouldPauseForEnemy(enemyId) {
+    return parseEnemyIdList(afkEnemyIds).includes(String(enemyId || ""));
+  }
+
+  function hasShinyRankMarker() {
+    return [...document.querySelectorAll("#divFightH .rank.txtgray2")].some(rank =>
+      [...rank.classList].some(className => className.startsWith("shine"))
+    );
+  }
+
+  function pauseAuto(reason, type = 'WARN') {
+    auto = false;
+    saveData();
+    updateAutoButtonUI();
+    log(reason, type);
+  }
+
+  function isVisibleElement(element) {
+    if (!element) return false;
+    const style = window.getComputedStyle(element);
+    return style.display !== "none"
+      && style.visibility !== "hidden"
+      && !element.disabled
+      && (element.offsetParent !== null || style.position === "fixed");
+  }
+
+  function findVisibleDialog() {
+    const selectors = [
+      '.dialog', '.confirm', '.modal', '.popup',
+      '[class*="confirm"]', '[class*="dialog"]', '[class*="modal"]',
+      '[role="dialog"]', '[role="alertdialog"]'
+    ];
+
+    for (const selector of selectors) {
+      const dialog = [...document.querySelectorAll(selector)].find(isVisibleElement);
+      if (dialog) return dialog;
+    }
+
+    return null;
+  }
+
+  function findActionButton(pattern, root = document, excluded = null) {
+    const elements = root.querySelectorAll("button, .button, .btn, input[type='button'], input[type='submit'], a.button");
+    return [...elements].find(element => {
+      if (element === excluded || !isVisibleElement(element)) return false;
+      const text = (element.textContent || element.value || "").trim().toLowerCase();
+      return pattern.test(text);
+    }) || null;
+  }
+
+  function allowOneSurrenderConfirm() {
+    window.__gameBotAllowSurrenderConfirmUntil = Date.now() + 2500;
+  }
+
+  async function surrenderCurrentFight(enemyId, enemyName) {
+    if (surrenderInProgress || !isInFight()) return false;
+    surrenderInProgress = true;
+    lastAttackTime = Date.now();
+    log(`🚩 Сдаёмся мобу ${enemyName || enemyId} (${enemyId})`, 'WARN');
+
+    try {
+      const surrenderButton = findActionButton(/сдаться/);
+      if (!surrenderButton) {
+        pauseAuto(`Не найдена кнопка сдачи для ${enemyName || enemyId}`, 'ERROR');
+        handledEncounterAction = "";
+        return false;
+      }
+
+      allowOneSurrenderConfirm();
+      surrenderButton.click();
+      await delay(200);
+
+      const dialog = findVisibleDialog();
+      const confirmButton = dialog
+        ? findActionButton(/сдаться/, dialog, surrenderButton) || findActionButton(/^(да|yes|подтвердить|ok)$/i, dialog, surrenderButton)
+        : null;
+
+      if (confirmButton) {
+        allowOneSurrenderConfirm();
+        confirmButton.click();
+      }
+
+      const surrendered = await waitFor(() => !isInFight(), 6000, 200);
+      if (!surrendered) {
+        pauseAuto(`Сдача мобу ${enemyName || enemyId} не завершилась вовремя`, 'ERROR');
+        handledEncounterAction = "";
+        return false;
+      }
+
+      log(`🚩 Бой с ${enemyName || enemyId} завершён сдачей`, 'WARN');
+      return true;
+    } catch (error) {
+      pauseAuto(`Ошибка сдачи: ${error}`, 'ERROR');
+      handledEncounterAction = "";
+      return false;
+    } finally {
+      surrenderInProgress = false;
+      window.__gameBotAllowSurrenderConfirmUntil = 0;
+    }
+  }
+
+  function evaluateEncounterPolicy() {
+    if (!isInFight()) return false;
+    if (surrenderInProgress || handledEncounterAction) return true;
+
+    const enemyId = getEnemyId();
+    const enemyName = getCurrentEnemy();
+
+    if (pauseOnShiny && hasShinyRankMarker()) {
+      handledEncounterAction = 'pause-shiny';
+      pauseAuto(`🌟 Найден особый окрас у ${enemyName || enemyId || 'неизвестного моба'}: бот остановлен`, 'WARN');
+      return true;
+    }
+
+    if (enemyId && shouldPauseForEnemy(enemyId)) {
+      handledEncounterAction = 'pause-enemy';
+      pauseAuto(`⏸️ Моб ${enemyName || enemyId} (${enemyId}) в AFK-списке: бот остановлен`, 'WARN');
+      return true;
+    }
+
+    if (enemyId && shouldSurrenderForEnemy(enemyId)) {
+      handledEncounterAction = 'surrender';
+      surrenderCurrentFight(enemyId, enemyName);
+      return true;
+    }
+
+    return false;
+  }
   
   // ===== ЗАГРУЗКА/СОХРАНЕНИЕ =====
   function loadData() {
@@ -112,13 +303,16 @@
         auto = parsed.auto ?? true;
         healPath = parsed.healPath || "";
         healPathBack = parsed.healPathBack || "";
+        surrenderEnemyIds = parsed.surrenderEnemyIds || "";
+        afkEnemyIds = parsed.afkEnemyIds || "";
+        pauseOnShiny = parsed.pauseOnShiny ?? true;
         hpThreshold = parsed.hpThreshold ?? 40;
         attackDelayMin = parsed.attackDelayMin ?? 2000;
         attackDelayMax = parsed.attackDelayMax ?? 5000;
         moveDelay = parsed.moveDelay ?? 2000;
         comboDelay = parsed.comboDelay ?? 1500;
         expConfig = parsed.expConfig || { attack: "", swap: "", targetLevel: 0 };
-        stats = parsed.stats || { kills: 0, credits: 0, fights: 0, items: {}, enemies: [] };
+        stats = createStatsSnapshot(parsed.stats || DEFAULT_STATS);
       }
     } catch(e) { log(`Ошибка загрузки: ${e}`, 'ERROR'); }
   }
@@ -126,11 +320,12 @@
   function saveData() {
     const data = {
       simpleRules, combos, useComboMode, auto,
-      healPath, healPathBack, hpThreshold,
+      healPath, healPathBack, surrenderEnemyIds, afkEnemyIds, pauseOnShiny, hpThreshold,
       attackDelayMin, attackDelayMax, moveDelay, comboDelay,
       expConfig, stats
     };
     localStorage.setItem('gamebot_data', JSON.stringify(data));
+    syncStatsToExtension();
   }
   
   function delay(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
@@ -461,21 +656,37 @@
   function attackByRules() {
     const enemy = getCurrentEnemy();
     const enemyId = getEnemyId();
+    let matchedRule = false;
     
     for (let i = 0; i < 4; i++) {
       const rule = simpleRules[i];
       if (!rule) continue;
       
       const rawCount = String(rule.count ?? "").trim();
+      if (rawCount === "") continue;
+
       const countLimit = parseInt(rawCount) || 0;
-      const hasLimit = rawCount !== "" && countLimit > 0;
+      if (countLimit <= 0) continue;
+
+      const hasLimit = true;
       const against = (rule.against || "").trim().toLowerCase();
       const matchesEnemy = !against || enemy.includes(against) || String(enemyId || "") === against;
       const usageCount = attackCounter[i] || 0;
       
       if (!matchesEnemy) continue;
-      if (hasLimit && usageCount >= countLimit) continue;
-      if (getPP(i) <= 0) continue;
+      matchedRule = true;
+
+      if (hasLimit && usageCount >= countLimit) {
+        log(`📋 Правило: атака ${i+1} пропущена, лимит ${countLimit} уже достигнут`, 'RULE');
+        continue;
+      }
+
+      const pp = getPP(i);
+      if (pp <= 0) {
+        log(`📋 Правило: атака ${i+1} выбрана, но PP закончились`, 'WARN');
+        needHealAfterLimit = true;
+        return { executed: false, blocked: true };
+      }
       
       if (clickAttack(i)) {
         attackCounter[i] = usageCount + 1;
@@ -491,10 +702,13 @@
           needHealAfterLimit = true;
         }
 
-        return true;
+        return { executed: true, blocked: false };
       }
+
+      log(`📋 Правило: атака ${i+1} выбрана, но слот сейчас недоступен`, 'WARN');
+      return { executed: false, blocked: true };
     }
-    return false;
+    return { executed: false, blocked: matchedRule };
   }
   
   function attackDefault() {
@@ -523,7 +737,9 @@
     }
     
     // Проверка правил атак
-    if (attackByRules()) return;
+    const ruleResult = attackByRules();
+    if (ruleResult.executed) return;
+    if (ruleResult.blocked) return;
     
     // Обычная атака
     attackDefault();
@@ -545,12 +761,14 @@
   function updateUI() {
     const killsEl = document.getElementById("gb-stats-kills");
     const creditsEl = document.getElementById("gb-stats-credits");
+    const dropsEl = document.getElementById("gb-stats-drops");
     const locEl = document.getElementById("gb-location");
     const modeEl = document.getElementById("gb-mode-status");
     const expEl = document.getElementById("gb-exp-status");
     
     if (killsEl) killsEl.textContent = stats.kills;
     if (creditsEl) creditsEl.textContent = stats.credits;
+    if (dropsEl) dropsEl.textContent = getDropItemsTotal();
     if (locEl) locEl.textContent = currentLocation || "---";
     if (modeEl) modeEl.textContent = useComboMode ? "🔥 КОМБО" : "📋 ПРАВИЛА";
     if (expEl) {
@@ -778,6 +996,20 @@
           <input id="heal-back-input" value="${healPathBack}" style="width:100%; padding:5px; background:#111; border:1px solid #555; color:#f39c12; border-radius:4px;">
         </div>
         <div style="margin-bottom:12px;">
+          <label style="color:#888;">🚩 СДАВАТЬСЯ MOB ID:</label>
+          <input id="surrender-enemies-input" value="${surrenderEnemyIds}" style="width:100%; padding:5px; background:#111; border:1px solid #555; color:#e74c3c; border-radius:4px;">
+          <small>Например: 041, 123</small>
+        </div>
+        <div style="margin-bottom:12px;">
+          <label style="color:#888;">⏸️ AFK MOB ID:</label>
+          <input id="afk-enemies-input" value="${afkEnemyIds}" style="width:100%; padding:5px; background:#111; border:1px solid #555; color:#4fa3f5; border-radius:4px;">
+          <small>При встрече бот остановится</small>
+        </div>
+        <div style="margin-bottom:12px; display:flex; align-items:center; gap:8px;">
+          <input id="pause-on-shiny" type="checkbox" ${pauseOnShiny ? "checked" : ""}>
+          <label for="pause-on-shiny" style="color:#888;">🌟 Останавливать бота на любом shiny/special окрасе</label>
+        </div>
+        <div style="margin-bottom:12px;">
           <label style="color:#888;">💚 ПОРОГ HP: ${hpThreshold}%</label>
           <input id="hp-range" type="range" min="0" max="100" value="${hpThreshold}" style="width:100%;">
         </div>
@@ -805,6 +1037,9 @@
     document.getElementById("save-settings").onclick = () => {
       healPath = document.getElementById("heal-path-input").value;
       healPathBack = document.getElementById("heal-back-input").value;
+      surrenderEnemyIds = document.getElementById("surrender-enemies-input").value;
+      afkEnemyIds = document.getElementById("afk-enemies-input").value;
+      pauseOnShiny = document.getElementById("pause-on-shiny").checked;
       hpThreshold = parseInt(document.getElementById("hp-range").value);
       attackDelayMin = parseInt(document.getElementById("attack-min").value);
       attackDelayMax = parseInt(document.getElementById("attack-max").value);
@@ -848,6 +1083,7 @@
         <div style="background:rgba(0,0,0,0.3); padding:6px; border-radius:5px; margin-bottom:10px;">
           <div>🎯 Убийств: <span id="gb-stats-kills">0</span></div>
           <div>💰 Кредитов: <span id="gb-stats-credits">0</span></div>
+          <div>📦 Вещей: <span id="gb-stats-drops">0</span></div>
           <div>📍 Локация: <span id="gb-location">---</span></div>
           <div>🎮 Режим: <span id="gb-mode-status">📋 ПРАВИЛА</span></div>
           <div>⭐ <span id="gb-exp-status">Автокач выключен</span></div>
@@ -893,8 +1129,7 @@
     autoBtn.onclick = () => {
       auto = !auto;
       saveData();
-      autoBtn.textContent = auto ? "▶️ ON" : "⏸️ OFF";
-      autoBtn.style.background = auto ? "#2ecc71" : "#e74c3c";
+      updateAutoButtonUI();
       log(auto ? "Бот ВКЛЮЧЁН" : "Бот ВЫКЛЮЧЁН");
     };
     
@@ -943,6 +1178,7 @@
       modeToggle.style.background = "#e74c3c";
     }
     
+    updateAutoButtonUI();
     updateUI();
   }
   
@@ -966,8 +1202,7 @@
       captchaPaused = true;
       auto = false;
       log("⚠️ КАПЧА! Бот остановлен", 'ERROR');
-      const autoBtn = document.getElementById("gb-auto-btn");
-      if (autoBtn) { autoBtn.textContent = "⏸️ OFF"; autoBtn.style.background = "#e74c3c"; }
+      updateAutoButtonUI();
     } else if (!hasCaptcha) { captchaPaused = false; }
     return hasCaptcha;
   }
@@ -990,6 +1225,8 @@
       if (inFight) {
         suppressAutoHealUntilNextFight = false;
         healRetryBlockedUntil = 0;
+        handledEncounterAction = "";
+        surrenderInProgress = false;
         resetCurrentEnemySnapshot();
         updateCurrentEnemySnapshot();
         lastAttackTime = Date.now();
@@ -998,11 +1235,18 @@
         healing = false;
         healingInProgress = false;
         isExecutingCombo = false;
+        handledEncounterAction = "";
+        surrenderInProgress = false;
         log("✅ Бой завершён", 'FIGHT');
         resetCurrentEnemySnapshot();
       }
       previousFightState = inFight;
       updateUI();
+    }
+
+    if (inFight && evaluateEncounterPolicy()) {
+      updateUI();
+      return;
     }
     
     if (!inFight) {
@@ -1017,17 +1261,29 @@
     if (inFight && !healing && !healingInProgress) {
       const now = Date.now();
       if (now - lastAttackTime >= getAttackDelay()) {
+        if (evaluateEncounterPolicy()) {
+          updateUI();
+          return;
+        }
         attack();
         updateUI();
       }
     }
   }
+
+  window.addEventListener('message', (event) => {
+    if (event.source !== window || event.data?.type !== 'TO_GAME_BOT') return;
+    if (event.data.action === 'resetStats') {
+      resetSessionStats('manual');
+    }
+  });
   
   // ===== ИНИЦИАЛИЗАЦИЯ =====
   function init() {
     console.log("%c🤖 GameBot v22.0 - Инициализация...", "color: #4fa3f5; font-size: 14px;");
     console.log("%c✨ Функции: правила атак, комбо, автокач, лечение", "color: #2ecc71; font-size: 12px");
     loadData();
+    resetSessionStats('init');
     setInterval(createUI, 2000);
     setInterval(mainLoop, 500);
     console.log("%c✅ Бот готов!", "color: #2ecc71; font-size: 12px");

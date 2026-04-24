@@ -28,7 +28,11 @@
   let lastSeenEnemyId = null;
   let lastSeenEnemyName = "";
   let handledEncounterAction = "";
+  let handledEncounterUntil = 0;
   let surrenderInProgress = false;
+  let nextSurrenderAttemptAt = 0;
+  let lastSurrenderedEnemyId = null;
+  let lastSurrenderedEnemyUntil = 0;
   
   // COMBO VARIABLES
   let isExecutingCombo = false;
@@ -94,6 +98,135 @@
     if (!autoBtn) return;
     autoBtn.textContent = auto ? "▶️ ON" : "⏸️ OFF";
     autoBtn.style.background = auto ? "#2ecc71" : "#e74c3c";
+  }
+
+  function installSurrenderDebugHooks() {
+    if (window.__gameBotSurrenderHooksInstalled) return;
+    window.__gameBotSurrenderHooksInstalled = true;
+    window.__gameBotAllowSurrenderConfirmUntil = Number(window.__gameBotAllowSurrenderConfirmUntil || 0);
+    window.__gameBotDebugSurrenderTrace = Boolean(window.__gameBotDebugSurrenderTrace);
+
+    const SURRENDER_CONFIRM_KEY = "{{fight_surrend_confirm}}";
+
+    function shouldAutoApproveSurrender(atTime = Date.now()) {
+      return Number(window.__gameBotAllowSurrenderConfirmUntil || 0) > atTime;
+    }
+
+    function inspectPrototypeEventCache(target) {
+      const cache = window.Event?.cache;
+      if (!cache || !target) return [];
+
+      return Object.entries(cache)
+        .filter(([, entry]) => entry?.element === target)
+        .map(([uid, entry]) => ({
+          uid,
+          eventNames: Object.keys(entry || {}),
+          clickEntry: entry?.click,
+          eventsEntry: entry?.events?.click,
+          rawEntry: entry
+        }));
+    }
+
+    function serializeHandler(handler) {
+      if (!handler) return handler;
+      if (typeof handler === 'function') {
+        return String(handler).slice(0, 2000);
+      }
+      return handler;
+    }
+
+    const originalConfirm = window.confirm;
+    if (!originalConfirm?.__gameBotWrapped) {
+      const wrappedConfirm = function(message) {
+        const confirmText = String(message || "").toLowerCase();
+        const isSurrenderConfirm = confirmText.includes("сдаться");
+        const confirmInvokedAt = Date.now();
+
+        if (isSurrenderConfirm && window.__gameBotDebugSurrenderTrace) {
+          console.group("🔎 GAMEBOT INJECT CONFIRM TRACE");
+          console.log("message:", message);
+          console.log("allowUntil:", window.__gameBotAllowSurrenderConfirmUntil || 0);
+          console.log("confirmInvokedAt:", confirmInvokedAt);
+          console.log("stack:", new Error("GameBot inject surrender confirm trace").stack);
+          console.groupEnd();
+          debugger;
+        }
+
+        if (isSurrenderConfirm) {
+          const allowSurrender = shouldAutoApproveSurrender(confirmInvokedAt);
+          if (!allowSurrender) {
+            return false;
+          }
+
+          window.__gameBotAllowSurrenderConfirmUntil = 0;
+          return true;
+        }
+
+        return originalConfirm.apply(this, arguments);
+      };
+
+      wrappedConfirm.__gameBotWrapped = true;
+      wrappedConfirm.__gameBotOriginal = originalConfirm;
+      window.confirm = wrappedConfirm;
+    }
+
+    function wrapSurrenderConfirmShortcut() {
+      const originalSc = window.sc;
+      if (typeof originalSc !== "function" || originalSc.__gameBotWrapped) return false;
+
+      const wrappedSc = function(a) {
+        if (a === SURRENDER_CONFIRM_KEY && shouldAutoApproveSurrender()) {
+          window.__gameBotAllowSurrenderConfirmUntil = 0;
+          if (window.__gameBotDebugSurrenderTrace) {
+            console.group("🔎 GAMEBOT INJECT SC BYPASS");
+            console.log("argument:", a);
+            console.log("stack:", new Error("GameBot inject sc bypass trace").stack);
+            console.groupEnd();
+          }
+          return true;
+        }
+
+        return originalSc.apply(this, arguments);
+      };
+
+      wrappedSc.__gameBotWrapped = true;
+      wrappedSc.__gameBotOriginal = originalSc;
+      window.sc = wrappedSc;
+      return true;
+    }
+
+    if (!wrapSurrenderConfirmShortcut()) {
+      const scHookInterval = window.setInterval(() => {
+        if (wrapSurrenderConfirmShortcut()) {
+          window.clearInterval(scHookInterval);
+        }
+      }, 250);
+    }
+
+    document.addEventListener('click', (event) => {
+      if (!window.__gameBotDebugSurrenderTrace) return;
+
+      const target = event.target instanceof Element
+        ? event.target.closest('button, .button, .btn, a, [role="button"], input[type="button"], input[type="submit"]')
+        : null;
+      const label = (target?.textContent || target?.value || target?.getAttribute('aria-label') || '').trim().toLowerCase();
+      if (!label.includes("сдаться")) return;
+
+      const prototypeMatches = inspectPrototypeEventCache(target);
+
+      console.group("🔎 GAMEBOT INJECT CLICK TRACE");
+      console.log("target:", target);
+      console.log("html:", target?.outerHTML);
+      console.log("onclick:", serializeHandler(target?.onclick));
+      console.log("onmousedown:", serializeHandler(target?.onmousedown));
+      console.log("onmouseup:", serializeHandler(target?.onmouseup));
+      console.log("prototypeMatches:", prototypeMatches);
+      console.log("stack:", new Error("GameBot inject surrender click trace").stack);
+      console.groupEnd();
+      debugger;
+    }, true);
+
+    console.log("🔧 GameBot inject surrender hooks installed");
   }
   
   // ===== УПРАВЛЕНИЕ ДИКИМИ МОНСТРАМИ =====
@@ -179,6 +312,33 @@
     log(reason, type);
   }
 
+  function holdEncounterAction(action, durationMs) {
+    handledEncounterAction = action;
+    handledEncounterUntil = Date.now() + Math.max(durationMs || 0, 0);
+  }
+
+  function clearEncounterAction() {
+    handledEncounterAction = "";
+    handledEncounterUntil = 0;
+    surrenderInProgress = false;
+    nextSurrenderAttemptAt = 0;
+  }
+
+  function markEnemyAsRecentlySurrendered(enemyId, durationMs = 5000) {
+    lastSurrenderedEnemyId = enemyId ? String(enemyId) : null;
+    lastSurrenderedEnemyUntil = Date.now() + durationMs;
+  }
+
+  function isEnemyRecentlySurrendered(enemyId) {
+    if (!enemyId || !lastSurrenderedEnemyId) return false;
+    if (Date.now() >= lastSurrenderedEnemyUntil) {
+      lastSurrenderedEnemyId = null;
+      lastSurrenderedEnemyUntil = 0;
+      return false;
+    }
+    return String(enemyId) === lastSurrenderedEnemyId;
+  }
+
   function isVisibleElement(element) {
     if (!element) return false;
     const style = window.getComputedStyle(element);
@@ -212,6 +372,28 @@
     }) || null;
   }
 
+  function findFightCloseButton() {
+    const fightButtons = document.querySelector("#divFightButtons");
+    if (!fightButtons || !isVisibleElement(fightButtons)) return null;
+    return findActionButton(/^закрыть$/i, fightButtons);
+  }
+
+  async function closeFightAfterSurrender() {
+    const closeReady = await waitFor(() => !!findFightCloseButton(), 5000, 200);
+    if (!closeReady) {
+      log("Кнопка Закрыть после сдачи не появилась", 'WARN');
+      return false;
+    }
+
+    const closeButton = findFightCloseButton();
+    if (!closeButton) return false;
+
+    closeButton.click();
+    await delay(200);
+    log("Окно боя закрыто после сдачи", 'INFO');
+    return true;
+  }
+
   function allowOneSurrenderConfirm() {
     window.__gameBotAllowSurrenderConfirmUntil = Date.now() + 2500;
   }
@@ -225,11 +407,25 @@
     try {
       const surrenderButton = findActionButton(/сдаться/);
       if (!surrenderButton) {
-        pauseAuto(`Не найдена кнопка сдачи для ${enemyName || enemyId}`, 'ERROR');
-        handledEncounterAction = "";
+        if (findFightCloseButton()) {
+          await closeFightAfterSurrender();
+          log(`🚩 Бой с ${enemyName || enemyId} завершён сдачей`, 'WARN');
+          return true;
+        }
+
+        if (!isFightUiActiveForSurrender()) {
+          clearEncounterAction();
+          log(`Повтор сдачи для ${enemyName || enemyId} отменён: бой уже неактивен`, 'INFO');
+          return false;
+        }
+
+        nextSurrenderAttemptAt = Date.now() + 3000;
+        holdEncounterAction('surrender', 3000);
+        log(`Кнопка сдачи временно недоступна для ${enemyName || enemyId}, повтор через 3 сек`, 'WARN');
         return false;
       }
 
+      holdEncounterAction('surrender', 20000);
       allowOneSurrenderConfirm();
       surrenderButton.click();
       await delay(200);
@@ -244,18 +440,34 @@
         confirmButton.click();
       }
 
-      const surrendered = await waitFor(() => !isInFight(), 6000, 200);
-      if (!surrendered) {
-        pauseAuto(`Сдача мобу ${enemyName || enemyId} не завершилась вовремя`, 'ERROR');
-        handledEncounterAction = "";
+      const postSurrenderReady = await waitFor(() => !!findFightCloseButton() || !isInFight(), 20000, 200);
+      if (!postSurrenderReady) {
+        if (!isFightUiActiveForSurrender()) {
+          clearEncounterAction();
+          log(`Повтор сдачи для ${enemyName || enemyId} отменён: бой уже неактивен`, 'INFO');
+          return false;
+        }
+
+        nextSurrenderAttemptAt = Date.now() + 3000;
+        holdEncounterAction('surrender', 3000);
+        log(`Сдача мобу ${enemyName || enemyId} еще не завершилась, повтор через 3 сек`, 'WARN');
         return false;
       }
 
+      if (findFightCloseButton()) {
+        await closeFightAfterSurrender();
+      } else {
+        await waitFor(() => !isInFight(), 5000, 200);
+      }
+
+      markEnemyAsRecentlySurrendered(enemyId);
+      clearEncounterAction();
       log(`🚩 Бой с ${enemyName || enemyId} завершён сдачей`, 'WARN');
       return true;
     } catch (error) {
-      pauseAuto(`Ошибка сдачи: ${error}`, 'ERROR');
-      handledEncounterAction = "";
+      nextSurrenderAttemptAt = Date.now() + 3000;
+      holdEncounterAction('surrender', 3000);
+      log(`Ошибка сдачи: ${error}`, 'ERROR');
       return false;
     } finally {
       surrenderInProgress = false;
@@ -265,25 +477,45 @@
 
   function evaluateEncounterPolicy() {
     if (!isInFight()) return false;
-    if (surrenderInProgress || handledEncounterAction) return true;
+
+    if (handledEncounterAction) {
+      if (Date.now() < handledEncounterUntil) return true;
+      handledEncounterAction = "";
+      handledEncounterUntil = 0;
+    }
+
+    if (surrenderInProgress) return true;
 
     const enemyId = getEnemyId();
     const enemyName = getCurrentEnemy();
 
     if (pauseOnShiny && hasShinyRankMarker()) {
-      handledEncounterAction = 'pause-shiny';
+      holdEncounterAction('pause-shiny', 60000);
       pauseAuto(`🌟 Найден особый окрас у ${enemyName || enemyId || 'неизвестного моба'}: бот остановлен`, 'WARN');
       return true;
     }
 
     if (enemyId && shouldPauseForEnemy(enemyId)) {
-      handledEncounterAction = 'pause-enemy';
+      holdEncounterAction('pause-enemy', 60000);
       pauseAuto(`⏸️ Моб ${enemyName || enemyId} (${enemyId}) в AFK-списке: бот остановлен`, 'WARN');
       return true;
     }
 
     if (enemyId && shouldSurrenderForEnemy(enemyId)) {
-      handledEncounterAction = 'surrender';
+      if (isEnemyRecentlySurrendered(enemyId)) {
+        return true;
+      }
+
+      if (!isFightUiActiveForSurrender() && !findFightCloseButton()) {
+        return true;
+      }
+
+      if (Date.now() < nextSurrenderAttemptAt) {
+        holdEncounterAction('surrender', nextSurrenderAttemptAt - Date.now());
+        return true;
+      }
+
+      holdEncounterAction('surrender', 20000);
       surrenderCurrentFight(enemyId, enemyName);
       return true;
     }
@@ -343,6 +575,14 @@
       const pp = attack.querySelector(".divMoveParams")?.textContent;
       return pp?.includes("/");
     });
+  }
+
+  function isFightUiActiveForSurrender() {
+    if (!isInFight()) return false;
+    if (findActionButton(/сдаться/)) return true;
+
+    const fightActionText = document.querySelector("#divFightAction")?.textContent?.trim() || "";
+    return fightActionText.includes("Ваш ход");
   }
 
   function extractMonsterIdFromSrc(src) {
@@ -1225,8 +1465,7 @@
       if (inFight) {
         suppressAutoHealUntilNextFight = false;
         healRetryBlockedUntil = 0;
-        handledEncounterAction = "";
-        surrenderInProgress = false;
+        clearEncounterAction();
         resetCurrentEnemySnapshot();
         updateCurrentEnemySnapshot();
         lastAttackTime = Date.now();
@@ -1235,8 +1474,7 @@
         healing = false;
         healingInProgress = false;
         isExecutingCombo = false;
-        handledEncounterAction = "";
-        surrenderInProgress = false;
+        clearEncounterAction();
         log("✅ Бой завершён", 'FIGHT');
         resetCurrentEnemySnapshot();
       }
@@ -1282,6 +1520,7 @@
   function init() {
     console.log("%c🤖 GameBot v22.0 - Инициализация...", "color: #4fa3f5; font-size: 14px;");
     console.log("%c✨ Функции: правила атак, комбо, автокач, лечение", "color: #2ecc71; font-size: 12px");
+    installSurrenderDebugHooks();
     loadData();
     resetSessionStats('init');
     setInterval(createUI, 2000);

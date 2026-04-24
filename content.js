@@ -100,12 +100,22 @@ const observer = new MutationObserver(() => {
   autoPressEnter();
 });
 
-observer.observe(document.body, {
-  childList: true,
-  subtree: true,
-  attributes: true,
-  attributeFilter: ['style', 'class', 'display']
-});
+function startDialogAutomation() {
+  if (startDialogAutomation.started || !document.body) return;
+  startDialogAutomation.started = true;
+
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['style', 'class', 'display']
+  });
+}
+
+startDialogAutomation();
+if (!startDialogAutomation.started) {
+  document.addEventListener('DOMContentLoaded', startDialogAutomation, { once: true });
+}
 
 // Запускаем авто-закрытие каждые 200мс
 setInterval(autoCloseDialogs, 200);
@@ -116,12 +126,104 @@ const overrideScript = document.createElement('script');
 overrideScript.textContent = `
   (function() {
     window.__gameBotAllowSurrenderConfirmUntil = 0;
+    window.__gameBotDebugSurrenderConfirm = true;
+    window.__gameBotDebugSurrenderClick = true;
+    window.__gameBotLastSurrenderClickAt = 0;
+
+    const CLICK_TRACE_WINDOW_MS = 1500;
+    const wrappedClickListeners = new WeakMap();
+
+    function getSurrenderElement(node) {
+      if (!(node instanceof Element)) return null;
+      return node.closest('button, .button, .btn, a, [role="button"], input[type="button"], input[type="submit"]');
+    }
+
+    function getElementLabel(element) {
+      if (!element) return '';
+      return (element.textContent || element.value || element.getAttribute('aria-label') || '').trim().toLowerCase();
+    }
+
+    function isSurrenderElement(element) {
+      return getElementLabel(element).includes('сдаться');
+    }
+
+    function logSurrenderTrace(title, payload) {
+      console.group(title);
+      Object.entries(payload).forEach(([key, value]) => console.log(key + ':', value));
+      console.groupEnd();
+    }
+
+    document.addEventListener('click', function(event) {
+      if (!window.__gameBotDebugSurrenderClick) return;
+
+      const element = getSurrenderElement(event.target);
+      if (!isSurrenderElement(element)) return;
+
+      window.__gameBotLastSurrenderClickAt = Date.now();
+      logSurrenderTrace('🔎 GAMEBOT SURRENDER CLICK TRACE', {
+        element,
+        html: element?.outerHTML,
+        stack: new Error('GameBot surrender click trace').stack
+      });
+      debugger;
+    }, true);
+
+    const originalAddEventListener = EventTarget.prototype.addEventListener;
+    const originalRemoveEventListener = EventTarget.prototype.removeEventListener;
+
+    EventTarget.prototype.addEventListener = function(type, listener, options) {
+      if (type !== 'click' || !listener || wrappedClickListeners.has(listener)) {
+        return originalAddEventListener.call(this, type, listener, options);
+      }
+
+      const registrationStack = new Error('GameBot click listener registration').stack;
+      const wrappedListener = function(event) {
+        const recentSurrenderClick = Number(window.__gameBotLastSurrenderClickAt || 0) + CLICK_TRACE_WINDOW_MS > Date.now();
+        const surrenderTarget = getSurrenderElement(event?.target);
+        if (window.__gameBotDebugSurrenderClick && (recentSurrenderClick || isSurrenderElement(surrenderTarget))) {
+          logSurrenderTrace('🧭 GAMEBOT CLICK LISTENER TRACE', {
+            currentTarget: this,
+            target: event?.target,
+            surrenderTarget,
+            listener,
+            listenerSource: typeof listener === 'function' ? String(listener).slice(0, 1200) : listener,
+            registrationStack,
+            invocationStack: new Error('GameBot click listener invocation').stack
+          });
+          debugger;
+        }
+
+        if (typeof listener === 'function') {
+          return listener.call(this, event);
+        }
+
+        return listener.handleEvent.call(listener, event);
+      };
+
+      wrappedClickListeners.set(listener, wrappedListener);
+      return originalAddEventListener.call(this, type, wrappedListener, options);
+    };
+
+    EventTarget.prototype.removeEventListener = function(type, listener, options) {
+      const wrappedListener = wrappedClickListeners.get(listener);
+      return originalRemoveEventListener.call(this, type, wrappedListener || listener, options);
+    };
 
     // Переопределяем confirm (никогда не подтверждаем сдачу)
     const originalConfirm = window.confirm;
     window.confirm = function(message) {
       // Если сообщение о сдаче - возвращаем false (отмена)
       if (message && message.toLowerCase().includes("сдаться")) {
+        if (window.__gameBotDebugSurrenderConfirm) {
+          const stack = new Error("GameBot surrender confirm trace").stack;
+          console.group("🔎 GAMEBOT SURRENDER CONFIRM TRACE");
+          console.log("message:", message);
+          console.log("allowUntil:", window.__gameBotAllowSurrenderConfirmUntil || 0);
+          console.log("stack:", stack);
+          console.groupEnd();
+          debugger;
+        }
+
         const allowSurrender = Number(window.__gameBotAllowSurrenderConfirmUntil || 0) > Date.now();
         if (!allowSurrender) {
           console.log("🚫 AUTO-CANCEL surrender confirm");

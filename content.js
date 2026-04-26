@@ -126,8 +126,8 @@ const overrideScript = document.createElement('script');
 overrideScript.textContent = `
   (function() {
     window.__gameBotAllowSurrenderConfirmUntil = 0;
-    window.__gameBotDebugSurrenderConfirm = true;
-    window.__gameBotDebugSurrenderClick = true;
+    window.__gameBotDebugSurrenderConfirm = false;
+    window.__gameBotDebugSurrenderClick = false;
     window.__gameBotLastSurrenderClickAt = 0;
 
     const CLICK_TRACE_WINDOW_MS = 1500;
@@ -209,11 +209,11 @@ overrideScript.textContent = `
       return originalRemoveEventListener.call(this, type, wrappedListener || listener, options);
     };
 
-    // Переопределяем confirm (никогда не подтверждаем сдачу)
+    // Переопределяем confirm (ручную сдачу не блокируем)
     const originalConfirm = window.confirm;
     window.confirm = function(message) {
-      // Если сообщение о сдаче - возвращаем false (отмена)
-      if (message && message.toLowerCase().includes("сдаться")) {
+      const isSurrenderConfirm = typeof message === 'string' && message.toLowerCase().includes("сдаться");
+      if (isSurrenderConfirm) {
         if (window.__gameBotDebugSurrenderConfirm) {
           const stack = new Error("GameBot surrender confirm trace").stack;
           console.group("🔎 GAMEBOT SURRENDER CONFIRM TRACE");
@@ -225,14 +225,15 @@ overrideScript.textContent = `
         }
 
         const allowSurrender = Number(window.__gameBotAllowSurrenderConfirmUntil || 0) > Date.now();
-        if (!allowSurrender) {
-          console.log("🚫 AUTO-CANCEL surrender confirm");
-          return false;
+        if (allowSurrender) {
+          window.__gameBotAllowSurrenderConfirmUntil = 0;
+          console.log("✅ AUTO-ALLOW surrender confirm");
+          return true;
         }
-        window.__gameBotAllowSurrenderConfirmUntil = 0;
-        console.log("✅ AUTO-ALLOW surrender confirm");
-        return true;
+
+        return originalConfirm.apply(this, arguments);
       }
+
       console.log("✅ AUTO-CONFIRM:", message);
       return true;
     };
@@ -254,21 +255,37 @@ overrideScript.textContent = `
     // Отключаем onbeforeunload
     window.onbeforeunload = null;
     
-    console.log("🔧 Page functions overridden (surrender disabled)");
+    console.log("🔧 Page functions overridden (manual surrender preserved)");
   })();
 `;
 (document.head || document.documentElement).appendChild(overrideScript);
 overrideScript.onload = () => overrideScript.remove();
 
 // ===== MESSAGE BRIDGE =====
+const bridgePendingRequests = new Map();
+let nextBridgeRequestId = 1;
+
+function resolveBridgeRequest(requestId, payload) {
+  if (!bridgePendingRequests.has(requestId)) return false;
+  const respond = bridgePendingRequests.get(requestId);
+  bridgePendingRequests.delete(requestId);
+  respond(payload);
+  return true;
+}
+
 window.addEventListener('message', (event) => {
   if (event.source !== window) return;
   if (event.data?.type === 'FROM_GAME_BOT') {
-    const { action, data } = event.data;
+    const { action, data, requestId } = event.data;
+    if (action === 'resetStats_response' && resolveBridgeRequest(requestId, data || { success: true })) {
+      return;
+    }
+
     chrome.runtime.sendMessage({ action, data }, (response) => {
       window.postMessage({
         type: 'TO_GAME_BOT',
         action: action + '_response',
+        requestId,
         data: response
       }, '*');
     });
@@ -277,8 +294,12 @@ window.addEventListener('message', (event) => {
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'resetStats') {
-    window.postMessage({ type: 'TO_GAME_BOT', action: 'resetStats' }, '*');
-    sendResponse({ success: true });
+    const requestId = nextBridgeRequestId++;
+    bridgePendingRequests.set(requestId, sendResponse);
+    window.postMessage({ type: 'TO_GAME_BOT', action: 'resetStats', requestId }, '*');
+    window.setTimeout(() => {
+      resolveBridgeRequest(requestId, { success: false, error: 'reset-timeout' });
+    }, 5000);
     return true;
   }
 });
@@ -326,4 +347,4 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-console.log("✅ GameBot Content Script ready - Surrender disabled");
+console.log("✅ GameBot Content Script ready - Manual surrender preserved");

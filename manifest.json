@@ -4,13 +4,21 @@
   "version": "22.0",
   "description": "Автобот для браузерной игры",
   "permissions": ["storage", "activeTab", "scripting", "notifications"],
-  "host_permissions": ["https://game.league17.ru/*"],
+  "host_permissions": [
+    "https://game.league17.ru/*",
+    "https://eu.league17.ru/*",
+    "https://league17.ru/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },
   "content_scripts": [
     {
-      "matches": ["https://game.league17.ru/*"],
+      "matches": [
+        "https://game.league17.ru/*",
+        "https://eu.league17.ru/*",
+        "https://league17.ru/*"
+      ],
       "js": ["content.js"],
       "run_at": "document_start"
     }
@@ -22,7 +30,11 @@
   "web_accessible_resources": [
     {
       "resources": ["inject.js", "sounds/heal.mp3"],
-      "matches": ["https://game.league17.ru/*"]
+      "matches": [
+        "https://game.league17.ru/*",
+        "https://eu.league17.ru/*",
+        "https://league17.ru/*"
+      ]
     }
   ]
 }

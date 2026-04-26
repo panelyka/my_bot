@@ -3,8 +3,11 @@
 (function() {
   "use strict";
   
+  const SUPPORTED_GAME_HOSTS = new Set(['game.league17.ru', 'eu.league17.ru', 'league17.ru']);
+  const MAX_RECENT_DROPS = 30;
+  
   // ===== ПРОВЕРКА САЙТА =====
-  if (!window.location.hostname.includes("league17.ru")) {
+  if (!SUPPORTED_GAME_HOSTS.has(window.location.hostname)) {
     console.log("GameBot: Работает только на league17.ru");
     return;
   }
@@ -33,6 +36,9 @@
   let nextSurrenderAttemptAt = 0;
   let lastSurrenderedEnemyId = null;
   let lastSurrenderedEnemyUntil = 0;
+  let nextBridgeRequestId = 1;
+  let statsSyncQueue = Promise.resolve();
+  const pendingBridgeRequests = new Map();
   
   // COMBO VARIABLES
   let isExecutingCombo = false;
@@ -41,7 +47,7 @@
   let expConfig = { attack: "", swap: "", targetLevel: 0 };
   
   // STATS
-  const DEFAULT_STATS = Object.freeze({ kills: 0, credits: 0, fights: 0, items: {}, enemies: [] });
+  const DEFAULT_STATS = Object.freeze({ kills: 0, credits: 0, fights: 0, items: {}, enemies: [], recentDrops: [] });
   let stats = createStatsSnapshot();
   let lastAlert = "";
   let attackCounter = {};
@@ -79,6 +85,7 @@
     "Пасека": { forward: ["btnGo776", "btnGo59", "btnGo47", "btnGo50"], back: ["btnGo47", "btnGo59", "btnGo776", "btnGo779"] },
     "Пещера Потатов": { forward: ["btnGo796"], back: ["btnGo168"] },
     "Дорога №2": { forward: ["btnGo9", "btnGo1", "btnGo3"], back: ["btnGo1", "btnGo9", "btnGo18"] },
+    "Дорога №3": { forward: ["btnGo10", "btnGo1", "btnGo3"], back: ["btnGo1", "btnGo10", "btnGo17"] },
     "Лес вокруг воздушного стадиона": { forward: ["btnGo9", "btnGo1", "btnGo3"], back: ["btnGo1", "btnGo9", "btnGo7"] },
     "Лиственный подлесок": { forward: ["btnGo7", "btnGo9", "btnGo1", "btnGo3"], back: ["btnGo1", "btnGo9", "btnGo7", "btnGo450"] },
     "Безлюдная дорога": { forward: ["btnGo33", "btnGo35"], back: ["btnGo33", "btnGo42"] },
@@ -246,13 +253,48 @@
     } catch(e) { log(`Ошибка: ${e}`, "ERROR"); }
   }
 
+  function ensureWildMonstersEnabled(retriesLeft = 4) {
+    const btn = document.querySelector(".btnSwitchWilds");
+    if (btn) {
+      setWildMonstersButton(true);
+      return true;
+    }
+
+    if (retriesLeft > 0) {
+      window.setTimeout(() => ensureWildMonstersEnabled(retriesLeft - 1), 400);
+    }
+
+    return false;
+  }
+
+  function createRecentDropSnapshot(source = {}) {
+    return {
+      type: source.type === 'credits' ? 'credits' : 'item',
+      name: String(source.name || (source.type === 'credits' ? 'Кредиты' : '')),
+      amount: Number(source.amount) || 0,
+      time: String(source.time || new Date().toLocaleTimeString()),
+      enemyId: source.enemyId ? String(source.enemyId) : '',
+      enemyName: String(source.enemyName || '')
+    };
+  }
+
+  function addRecentDrop(source = {}) {
+    const recentDrops = Array.isArray(stats.recentDrops) ? stats.recentDrops : [];
+    recentDrops.unshift(createRecentDropSnapshot(source));
+    if (recentDrops.length > MAX_RECENT_DROPS) recentDrops.length = MAX_RECENT_DROPS;
+    stats.recentDrops = recentDrops;
+  }
+
   function createStatsSnapshot(source = {}) {
     return {
       kills: Number(source.kills) || 0,
       credits: Number(source.credits) || 0,
       fights: Number(source.fights) || 0,
       items: source.items && typeof source.items === "object" ? { ...source.items } : {},
-      enemies: Array.isArray(source.enemies) ? [...source.enemies] : []
+      enemies: Array.isArray(source.enemies) ? [...source.enemies] : [],
+      recentDrops: Array.isArray(source.recentDrops)
+        ? source.recentDrops.slice(0, MAX_RECENT_DROPS).map(createRecentDropSnapshot)
+        : []
     };
   }
 
@@ -260,16 +302,47 @@
     return Object.values(stats.items || {}).reduce((total, amount) => total + (parseInt(amount, 10) || 0), 0);
   }
 
+  function postToExtension(action, data = {}, timeoutMs = 4000) {
+    return new Promise((resolve) => {
+      try {
+        const requestId = nextBridgeRequestId++;
+        const timeoutId = window.setTimeout(() => {
+          if (!pendingBridgeRequests.has(requestId)) return;
+          pendingBridgeRequests.delete(requestId);
+          resolve({ success: false, error: `${action}-timeout` });
+        }, timeoutMs);
+
+        pendingBridgeRequests.set(requestId, (response) => {
+          window.clearTimeout(timeoutId);
+          pendingBridgeRequests.delete(requestId);
+          resolve(response || { success: true });
+        });
+
+        window.postMessage({
+          type: 'FROM_GAME_BOT',
+          action,
+          requestId,
+          data
+        }, '*');
+      } catch (error) {
+        resolve({ success: false, error: String(error) });
+      }
+    });
+  }
+
   function syncStatsToExtension() {
-    try {
-      window.postMessage({
-        type: 'FROM_GAME_BOT',
-        action: 'syncStats',
-        data: { stats: createStatsSnapshot(stats) }
-      }, '*');
-    } catch (error) {
-      log(`Ошибка syncStats: ${error}`, 'WARN');
-    }
+    const snapshot = createStatsSnapshot(stats);
+    statsSyncQueue = statsSyncQueue
+      .catch(() => null)
+      .then(() => postToExtension('syncStats', { stats: snapshot }))
+      .then((response) => {
+        if (!response?.success) {
+          log(`Ошибка syncStats: ${response?.error || 'unknown-error'}`, 'WARN');
+        }
+        return response;
+      });
+
+    return statsSyncQueue;
   }
 
   function resetSessionStats(reason = 'manual') {
@@ -279,9 +352,9 @@
       fights: stats.fights
     };
     lastAlert = "";
-    saveData();
     updateUI();
     log(reason === 'init' ? 'Статистика убийств и дропа сброшена при запуске' : 'Статистика убийств и дропа сброшена', 'INFO');
+    return saveData();
   }
 
   function parseEnemyIdList(value) {
@@ -550,6 +623,7 @@
   }
   
   function saveData() {
+    stats = createStatsSnapshot(stats);
     const data = {
       simpleRules, combos, useComboMode, auto,
       healPath, healPathBack, surrenderEnemyIds, afkEnemyIds, pauseOnShiny, hpThreshold,
@@ -557,7 +631,7 @@
       expConfig, stats
     };
     localStorage.setItem('gamebot_data', JSON.stringify(data));
-    syncStatsToExtension();
+    return syncStatsToExtension();
   }
   
   function delay(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
@@ -659,17 +733,20 @@
     if (text === lastAlert) return;
     lastAlert = text;
     
+    const enemyName = getCurrentEnemy();
+    const enemyId = getEnemyId();
+    const dropTime = new Date().toLocaleTimeString();
+    let hasStatsChanges = false;
+    
     if (/разгромлен|побеждён|сражён|в нокауте|сокрушён|проиграл/i.test(text)) {
-      const enemyName = getCurrentEnemy();
-      const enemyId = getEnemyId();
       stats.kills++;
       stats.fights++;
       
-      stats.enemies.unshift({ id: enemyId, name: enemyName, time: new Date().toLocaleTimeString() });
+      stats.enemies.unshift({ id: enemyId, name: enemyName, time: dropTime });
       if (stats.enemies.length > 50) stats.enemies.pop();
       
       log(`🏆 Победа над ${enemyName} (ID: ${enemyId})`, 'FIGHT');
-      saveData();
+      hasStatsChanges = true;
     }
     
     const items = alerten.querySelectorAll(".item");
@@ -679,14 +756,18 @@
       
       if (title.toLowerCase().includes("кредит")) {
         stats.credits += amount;
+        addRecentDrop({ type: 'credits', name: 'Кредиты', amount, time: dropTime, enemyId, enemyName });
         log(`💰 +${amount} кредитов (всего: ${stats.credits})`, 'INFO');
       } else {
-        const itemName = title.replace(/x\d+/i, "").trim();
+        const itemName = title.replace(/x\d+/i, "").trim() || title.trim() || 'Предмет';
         stats.items[itemName] = (stats.items[itemName] || 0) + amount;
+        addRecentDrop({ type: 'item', name: itemName, amount, time: dropTime, enemyId, enemyName });
         log(`📦 +${itemName} x${amount}`, 'INFO');
       }
-      saveData();
+      hasStatsChanges = true;
     });
+
+    if (hasStatsChanges) saveData();
     
     updateUI();
   }
@@ -750,7 +831,7 @@
       log("=== ЛЕЧЕНИЕ ЗАВЕРШЕНО ===", 'HEAL');
       return true;
     } finally {
-      setWildMonstersButton(true);
+      ensureWildMonstersEnabled();
       healingInProgress = false;
     }
   }
@@ -1370,6 +1451,7 @@
       auto = !auto;
       saveData();
       updateAutoButtonUI();
+      if (auto) ensureWildMonstersEnabled();
       log(auto ? "Бот ВКЛЮЧЁН" : "Бот ВЫКЛЮЧЁН");
     };
     
@@ -1511,8 +1593,25 @@
 
   window.addEventListener('message', (event) => {
     if (event.source !== window || event.data?.type !== 'TO_GAME_BOT') return;
-    if (event.data.action === 'resetStats') {
-      resetSessionStats('manual');
+    const { action, requestId, data } = event.data;
+
+    if (typeof requestId === 'number' && typeof action === 'string' && action.endsWith('_response')) {
+      const resolve = pendingBridgeRequests.get(requestId);
+      if (resolve) {
+        resolve(data);
+        return;
+      }
+    }
+
+    if (action === 'resetStats') {
+      Promise.resolve(resetSessionStats('manual')).finally(() => {
+        window.postMessage({
+          type: 'FROM_GAME_BOT',
+          action: 'resetStats_response',
+          requestId,
+          data: { success: true, stats: createStatsSnapshot(stats) }
+        }, '*');
+      });
     }
   });
   
@@ -1523,6 +1622,7 @@
     installSurrenderDebugHooks();
     loadData();
     resetSessionStats('init');
+    if (auto) ensureWildMonstersEnabled();
     setInterval(createUI, 2000);
     setInterval(mainLoop, 500);
     console.log("%c✅ Бот готов!", "color: #2ecc71; font-size: 12px");

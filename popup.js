@@ -8,46 +8,102 @@ async function sendMessage(action, data = {}) {
   });
 }
 
+let currentStats = null;
+
 function getDropItemsTotal(items = {}) {
   return Object.values(items).reduce((total, amount) => total + (parseInt(amount, 10) || 0), 0);
 }
 
-async function updateStats() {
-  const stats = await sendMessage('getStats');
+function escapeHtml(value) {
+  return String(value || '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function openDropsModal() {
+  const modal = document.getElementById('drops-modal');
+  modal.classList.remove('hidden');
+  modal.setAttribute('aria-hidden', 'false');
+}
+
+function closeDropsModal() {
+  const modal = document.getElementById('drops-modal');
+  modal.classList.add('hidden');
+  modal.setAttribute('aria-hidden', 'true');
+}
+
+function renderRecentDrops(stats) {
+  const history = document.getElementById('drops-history');
+  const recentDrops = Array.isArray(stats?.recentDrops) ? stats.recentDrops : [];
+
+  if (!recentDrops.length) {
+    history.innerHTML = '<div class="stat">История выпадений пока пуста</div>';
+    return;
+  }
+
+  history.innerHTML = recentDrops.map((drop) => {
+    const title = drop.type === 'credits'
+      ? `💰 Кредиты: +${drop.amount || 0}`
+      : `📦 ${escapeHtml(drop.name || 'Предмет')} x${drop.amount || 0}`;
+    const source = drop.enemyName || drop.enemyId
+      ? `Источник: ${escapeHtml(drop.enemyName || 'Неизвестный')} ${drop.enemyId ? `(${escapeHtml(drop.enemyId)})` : ''}`
+      : 'Источник: не указан';
+    const time = drop.time ? `Время: ${escapeHtml(drop.time)}` : 'Время: —';
+
+    return `
+      <div class="drop-entry">
+        <div class="drop-entry-title">${title}</div>
+        <div class="drop-entry-meta">${time}</div>
+        <div class="drop-entry-meta">${source}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+function applyStats(stats) {
+  currentStats = stats && Object.keys(stats).length ? stats : null;
   const display = document.getElementById('stats-display');
   
-  if (stats) {
+  if (currentStats) {
     display.innerHTML = `
-      <div class="stat">🎯 Побед: ${stats.kills || 0}</div>
-      <div class="stat">💰 Кредитов: ${stats.credits || 0}</div>
-      <div class="stat">📦 Вещей: ${getDropItemsTotal(stats.items || {})}</div>
-      <div class="stat">⚔️ Боёв: ${stats.fights || 0}</div>
+      <div class="stat">🎯 Побед: ${currentStats.kills || 0}</div>
+      <div class="stat">💰 Кредитов: ${currentStats.credits || 0}</div>
+      <div class="stat stat-clickable" data-action="show-drops" tabindex="0">📦 Вещей: ${getDropItemsTotal(currentStats.items || {})}<span class="stat-hint">Нажмите, чтобы открыть последние выпадения</span></div>
+      <div class="stat">⚔️ Боёв: ${currentStats.fights || 0}</div>
     `;
   } else {
     display.innerHTML = '<div class="stat">Игра не найдена</div>';
   }
   
-  // Отображаем предметы
   const itemsDisplay = document.getElementById('items-display');
-  if (stats?.items && Object.keys(stats.items).length > 0) {
-    const items = Object.entries(stats.items).slice(-8).reverse();
+  if (currentStats?.items && Object.keys(currentStats.items).length > 0) {
+    const items = Object.entries(currentStats.items).slice(-8).reverse();
     itemsDisplay.innerHTML = items.map(([name, count]) => 
-      `<div class="stat">📦 ${name}: x${count}</div>`
+      `<div class="stat">📦 ${escapeHtml(name)}: x${count}</div>`
     ).join('');
   } else {
     itemsDisplay.innerHTML = '<div class="stat">—</div>';
   }
   
-  // Отображаем мобов
   const enemiesDisplay = document.getElementById('enemies-display');
-  if (stats?.enemies && stats.enemies.length > 0) {
-    const enemies = stats.enemies.slice(0, 8);
+  if (currentStats?.enemies && currentStats.enemies.length > 0) {
+    const enemies = currentStats.enemies.slice(0, 8);
     enemiesDisplay.innerHTML = enemies.map(e => 
-      `<div class="stat">👾 ${e.name || 'Неизвестный'} (${e.id || '?'})</div>`
+      `<div class="stat">👾 ${escapeHtml(e.name || 'Неизвестный')} (${escapeHtml(e.id || '?')})</div>`
     ).join('');
   } else {
     enemiesDisplay.innerHTML = '<div class="stat">—</div>';
   }
+
+  renderRecentDrops(currentStats);
+}
+
+async function updateStats() {
+  const stats = await sendMessage('getStats');
+  applyStats(stats);
 }
 
 async function viewLogs() {
@@ -100,10 +156,30 @@ async function resetStats() {
     return;
   }
 
-  await new Promise(resolve => setTimeout(resolve, 300));
   await updateStats();
   alert('Убийства и дроп сброшены');
 }
+
+document.getElementById('stats-display').addEventListener('click', (event) => {
+  if (event.target.closest('[data-action="show-drops"]')) {
+    openDropsModal();
+  }
+});
+
+document.getElementById('stats-display').addEventListener('keydown', (event) => {
+  if ((event.key === 'Enter' || event.key === ' ') && event.target.closest('[data-action="show-drops"]')) {
+    event.preventDefault();
+    openDropsModal();
+  }
+});
+
+document.getElementById('close-drops-modal').onclick = closeDropsModal;
+document.getElementById('drops-modal-backdrop').onclick = closeDropsModal;
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local' || !changes.stats) return;
+  applyStats(changes.stats.newValue || null);
+});
 
 document.getElementById('view-logs').onclick = viewLogs;
 document.getElementById('download-logs').onclick = downloadLogs;
@@ -111,4 +187,3 @@ document.getElementById('clear-logs').onclick = clearLogs;
 document.getElementById('reset-stats').onclick = resetStats;
 
 updateStats();
-setInterval(updateStats, 3000);

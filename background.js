@@ -113,6 +113,24 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       });
       return true;
     },
+    resetAllStats: () => {
+      withActiveGameTab((tab) => {
+        if (!tab?.id) {
+          sendResponse({ success: false, error: 'active-game-tab-not-found' });
+          return;
+        }
+
+        chrome.tabs.sendMessage(tab.id, { action: 'resetAllStats' }, (response) => {
+          if (chrome.runtime.lastError) {
+            sendResponse({ success: false, error: chrome.runtime.lastError.message });
+            return;
+          }
+
+          sendResponse(response || { success: true });
+        });
+      });
+      return true;
+    },
     getLogs: () => {
       chrome.storage.local.get(['logs'], (result) => {
         sendResponse(result.logs || []);

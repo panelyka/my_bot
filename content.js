@@ -128,86 +128,6 @@ overrideScript.textContent = `
     window.__gameBotAllowSurrenderConfirmUntil = 0;
     window.__gameBotDebugSurrenderConfirm = false;
     window.__gameBotDebugSurrenderClick = false;
-    window.__gameBotLastSurrenderClickAt = 0;
-
-    const CLICK_TRACE_WINDOW_MS = 1500;
-    const wrappedClickListeners = new WeakMap();
-
-    function getSurrenderElement(node) {
-      if (!(node instanceof Element)) return null;
-      return node.closest('button, .button, .btn, a, [role="button"], input[type="button"], input[type="submit"]');
-    }
-
-    function getElementLabel(element) {
-      if (!element) return '';
-      return (element.textContent || element.value || element.getAttribute('aria-label') || '').trim().toLowerCase();
-    }
-
-    function isSurrenderElement(element) {
-      return getElementLabel(element).includes('сдаться');
-    }
-
-    function logSurrenderTrace(title, payload) {
-      console.group(title);
-      Object.entries(payload).forEach(([key, value]) => console.log(key + ':', value));
-      console.groupEnd();
-    }
-
-    document.addEventListener('click', function(event) {
-      if (!window.__gameBotDebugSurrenderClick) return;
-
-      const element = getSurrenderElement(event.target);
-      if (!isSurrenderElement(element)) return;
-
-      window.__gameBotLastSurrenderClickAt = Date.now();
-      logSurrenderTrace('🔎 GAMEBOT SURRENDER CLICK TRACE', {
-        element,
-        html: element?.outerHTML,
-        stack: new Error('GameBot surrender click trace').stack
-      });
-      debugger;
-    }, true);
-
-    const originalAddEventListener = EventTarget.prototype.addEventListener;
-    const originalRemoveEventListener = EventTarget.prototype.removeEventListener;
-
-    EventTarget.prototype.addEventListener = function(type, listener, options) {
-      if (type !== 'click' || !listener || wrappedClickListeners.has(listener)) {
-        return originalAddEventListener.call(this, type, listener, options);
-      }
-
-      const registrationStack = new Error('GameBot click listener registration').stack;
-      const wrappedListener = function(event) {
-        const recentSurrenderClick = Number(window.__gameBotLastSurrenderClickAt || 0) + CLICK_TRACE_WINDOW_MS > Date.now();
-        const surrenderTarget = getSurrenderElement(event?.target);
-        if (window.__gameBotDebugSurrenderClick && (recentSurrenderClick || isSurrenderElement(surrenderTarget))) {
-          logSurrenderTrace('🧭 GAMEBOT CLICK LISTENER TRACE', {
-            currentTarget: this,
-            target: event?.target,
-            surrenderTarget,
-            listener,
-            listenerSource: typeof listener === 'function' ? String(listener).slice(0, 1200) : listener,
-            registrationStack,
-            invocationStack: new Error('GameBot click listener invocation').stack
-          });
-          debugger;
-        }
-
-        if (typeof listener === 'function') {
-          return listener.call(this, event);
-        }
-
-        return listener.handleEvent.call(listener, event);
-      };
-
-      wrappedClickListeners.set(listener, wrappedListener);
-      return originalAddEventListener.call(this, type, wrappedListener, options);
-    };
-
-    EventTarget.prototype.removeEventListener = function(type, listener, options) {
-      const wrappedListener = wrappedClickListeners.get(listener);
-      return originalRemoveEventListener.call(this, type, wrappedListener || listener, options);
-    };
 
     // Переопределяем confirm (ручную сдачу не блокируем)
     const originalConfirm = window.confirm;
@@ -277,7 +197,7 @@ window.addEventListener('message', (event) => {
   if (event.source !== window) return;
   if (event.data?.type === 'FROM_GAME_BOT') {
     const { action, data, requestId } = event.data;
-    if (action === 'resetStats_response' && resolveBridgeRequest(requestId, data || { success: true })) {
+    if (typeof action === 'string' && action.endsWith('_response') && resolveBridgeRequest(requestId, data || { success: true })) {
       return;
     }
 
@@ -293,10 +213,10 @@ window.addEventListener('message', (event) => {
 });
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === 'resetStats') {
+  if (request.action === 'resetStats' || request.action === 'resetAllStats') {
     const requestId = nextBridgeRequestId++;
     bridgePendingRequests.set(requestId, sendResponse);
-    window.postMessage({ type: 'TO_GAME_BOT', action: 'resetStats', requestId }, '*');
+    window.postMessage({ type: 'TO_GAME_BOT', action: request.action, requestId }, '*');
     window.setTimeout(() => {
       resolveBridgeRequest(requestId, { success: false, error: 'reset-timeout' });
     }, 5000);

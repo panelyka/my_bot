@@ -162,7 +162,7 @@
         if (isSurrenderConfirm) {
           const allowSurrender = shouldAutoApproveSurrender(confirmInvokedAt);
           if (!allowSurrender) {
-            return false;
+            return originalConfirm.apply(this, arguments);
           }
 
           window.__gameBotAllowSurrenderConfirmUntil = 0;
@@ -354,6 +354,14 @@
     lastAlert = "";
     updateUI();
     log(reason === 'init' ? 'Статистика убийств и дропа сброшена при запуске' : 'Статистика убийств и дропа сброшена', 'INFO');
+    return saveData();
+  }
+
+  function resetAllStats(reason = 'manual') {
+    stats = createStatsSnapshot(DEFAULT_STATS);
+    lastAlert = "";
+    updateUI();
+    log(reason === 'init' ? 'Вся статистика сброшена при запуске' : 'Вся статистика сброшена', 'INFO');
     return saveData();
   }
 
@@ -1608,6 +1616,18 @@
         window.postMessage({
           type: 'FROM_GAME_BOT',
           action: 'resetStats_response',
+          requestId,
+          data: { success: true, stats: createStatsSnapshot(stats) }
+        }, '*');
+      });
+      return;
+    }
+
+    if (action === 'resetAllStats') {
+      Promise.resolve(resetAllStats('manual')).finally(() => {
+        window.postMessage({
+          type: 'FROM_GAME_BOT',
+          action: 'resetAllStats_response',
           requestId,
           data: { success: true, stats: createStatsSnapshot(stats) }
         }, '*');

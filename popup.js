@@ -160,6 +160,19 @@ async function resetStats() {
   alert('Убийства и дроп сброшены');
 }
 
+async function resetAllStats() {
+  if (!confirm('Сбросить всю статистику? Будут очищены убийства, дроп, кредиты и бои.')) return;
+
+  const response = await sendMessage('resetAllStats');
+  if (!response?.success) {
+    alert('Не удалось полностью сбросить статистику. Откройте вкладку игры и попробуйте снова.');
+    return;
+  }
+
+  await updateStats();
+  alert('Вся статистика сброшена');
+}
+
 document.getElementById('stats-display').addEventListener('click', (event) => {
   if (event.target.closest('[data-action="show-drops"]')) {
     openDropsModal();
@@ -185,5 +198,6 @@ document.getElementById('view-logs').onclick = viewLogs;
 document.getElementById('download-logs').onclick = downloadLogs;
 document.getElementById('clear-logs').onclick = clearLogs;
 document.getElementById('reset-stats').onclick = resetStats;
+document.getElementById('reset-all-stats').onclick = resetAllStats;
 
 updateStats();

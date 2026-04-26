@@ -1459,7 +1459,11 @@
       auto = !auto;
       saveData();
       updateAutoButtonUI();
-      if (auto) ensureWildMonstersEnabled();
+      if (auto) {
+        ensureWildMonstersEnabled();
+      } else {
+        setWildMonstersButton(false);
+      }
       log(auto ? "Бот ВКЛЮЧЁН" : "Бот ВЫКЛЮЧЁН");
     };
     

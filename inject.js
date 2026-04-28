@@ -847,6 +847,14 @@
     const targetCard = getPokemonCardElement(targetItem) || getTargetPokemonCard(targetPokemonId);
     const targetLevel = getPokemonLevelFromCard(targetCard);
 
+    if (!targetLevel) {
+      return { pickerOpened: true, selected: false, targetLevel: 0, reason: 'level-unreadable' };
+    }
+
+    if (targetLevel >= expConfig.targetLevel) {
+      return { pickerOpened: true, selected: false, targetLevel, reachedTargetLevel: true };
+    }
+
     targetItem.click();
     await waitFor(() => getExpTargetPickerItems().length === 0, 3000, 100);
     await delay(250);
@@ -924,6 +932,24 @@
       log(`Автокач: выбрана атака "${attackName}"`, 'EXP');
 
       const pickResult = await pickExpTargetPokemon(expConfig.targetPokemonId);
+      if (pickResult.targetLevel > 0) {
+        expConfig.currentLevel = pickResult.targetLevel;
+        expConfig.stopReason = "";
+        saveData();
+        updateUI();
+        log(`Автокач: data-p-id ${expConfig.targetPokemonId} lvl ${pickResult.targetLevel}/${expConfig.targetLevel} перед выбором цели`, 'EXP');
+      }
+
+      if (pickResult.reason === 'level-unreadable') {
+        pauseAuto(`Автокач остановлен: не удалось прочитать уровень у data-p-id ${expConfig.targetPokemonId}`, 'EXP');
+        return;
+      }
+
+      if (pickResult.reachedTargetLevel) {
+        pauseAuto(`Автокач завершён: data-p-id ${expConfig.targetPokemonId} уже достиг lvl ${pickResult.targetLevel}/${expConfig.targetLevel} до атаки`, 'EXP');
+        return;
+      }
+
       if (pickResult.pickerOpened && !pickResult.selected) {
         pauseAuto(`Автокач остановлен: в окне выбора не найден data-p-id ${expConfig.targetPokemonId}`, 'EXP');
         return;
@@ -933,7 +959,9 @@
         log(`Автокач: выбран монстр data-p-id ${expConfig.targetPokemonId}`, 'EXP');
       }
 
-      await verifyExpTargetProgress(attackName, { manageLock: false, preferredLevel: pickResult.targetLevel });
+      expConfig.stopReason = "";
+      saveData();
+      updateUI();
     } finally {
       expLevelCheckInProgress = false;
     }

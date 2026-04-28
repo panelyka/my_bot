@@ -60,6 +60,7 @@
   
   // SETTINGS
   let hpThreshold = 40;
+  let attackHealThreshold = 1;
   let attackDelayMin = 2000;
   let attackDelayMax = 5000;
   let moveDelay = 2000;
@@ -664,6 +665,7 @@
         afkEnemyIds = parsed.afkEnemyIds || "";
         pauseOnShiny = parsed.pauseOnShiny ?? true;
         hpThreshold = parsed.hpThreshold ?? 40;
+        attackHealThreshold = parsed.attackHealThreshold ?? 1;
         attackDelayMin = parsed.attackDelayMin ?? 2000;
         attackDelayMax = parsed.attackDelayMax ?? 5000;
         moveDelay = parsed.moveDelay ?? 2000;
@@ -678,7 +680,7 @@
     stats = createStatsSnapshot(stats);
     const data = {
       simpleRules, combos, useComboMode, auto,
-      healPath, healPathBack, surrenderEnemyIds, afkEnemyIds, pauseOnShiny, hpThreshold,
+      healPath, healPathBack, surrenderEnemyIds, afkEnemyIds, pauseOnShiny, hpThreshold, attackHealThreshold,
       attackDelayMin, attackDelayMax, moveDelay, comboDelay,
       expConfig, stats
     };
@@ -787,9 +789,41 @@
     }));
   }
 
-  function getAllowedExpAttackOption() {
+  function getAttackHealThresholdValue() {
+    return Math.max(0, parseInt(attackHealThreshold, 10) || 0);
+  }
+
+  function hasEnoughAttackPP(pp) {
+    return (parseInt(pp, 10) || 0) > 0;
+  }
+
+  function shouldHealByAttackReserve(pp) {
+    return (parseInt(pp, 10) || 0) <= getAttackHealThresholdValue();
+  }
+
+  function getLowestRemainingAttackPP() {
+    const attackOptions = getAvailableAttackOptions();
+    if (!attackOptions.length) return null;
+    return attackOptions.reduce((lowest, option) => Math.min(lowest, option.pp), attackOptions[0].pp);
+  }
+
+  function queueHealAfterFight(reason) {
+    if (needHealAfterLimit) return;
+    needHealAfterLimit = true;
+    log(reason, 'HEAL');
+  }
+
+  function getAutoHealStatusText() {
+    return `HP < ${hpThreshold}% | PP <= ${getAttackHealThresholdValue()}`;
+  }
+
+  function getExpAttackCandidates() {
     const allowedNames = new Set(EXP_ALLOWED_ATTACK_NAMES.map(normalizeAttackName));
-    return getAvailableAttackOptions().find(option => option.pp > 0 && [...allowedNames].some(name => option.normalizedName.includes(name))) || null;
+    return getAvailableAttackOptions().filter(option => [...allowedNames].some(name => option.normalizedName.includes(name)));
+  }
+
+  function getAllowedExpAttackOption() {
+    return getExpAttackCandidates().find(option => hasEnoughAttackPP(option.pp)) || null;
   }
 
   function escapeAttributeValue(value) {
@@ -930,6 +964,10 @@
 
       const attackName = attackOption.name || `Атака ${attackOption.index + 1}`;
       log(`Автокач: выбрана атака "${attackName}"`, 'EXP');
+      const remainingPp = Math.max((attackOption.pp || 0) - 1, 0);
+      if (shouldHealByAttackReserve(remainingPp)) {
+        queueHealAfterFight(`🏥 Автокач: после "${attackName}" осталось ${remainingPp} PP, после боя идём лечиться`);
+      }
 
       const pickResult = await pickExpTargetPokemon(expConfig.targetPokemonId);
       if (pickResult.targetLevel > 0) {
@@ -969,22 +1007,27 @@
 
   function tryExpAttack() {
     if (!isExpConfigured()) return { handled: false, executed: false };
-    if (expLevelCheckInProgress) return { handled: true, executed: false };
+    if (expLevelCheckInProgress) return { handled: true, executed: false, allowFallback: false };
 
     const weatherCode = getFightWeatherCode();
     if (isForbiddenExpWeather(weatherCode)) {
       pauseAuto(`Автокач остановлен: запрещённая погода ${weatherCode}`, 'EXP');
-      return { handled: true, executed: false };
+      return { handled: true, executed: false, allowFallback: false };
     }
 
     const attackOption = getAllowedExpAttackOption();
     if (!attackOption) {
+      if (getExpAttackCandidates().length) {
+        queueHealAfterFight(`🏥 Автокач: доступные атаки закончились или дошли до порога PP ${getAttackHealThresholdValue()}`);
+        return { handled: true, executed: false, allowFallback: true };
+      }
+
       pauseAuto(`Автокач остановлен: нет доступной атаки (${EXP_ALLOWED_ATTACK_NAMES.join(' / ')})`, 'EXP');
-      return { handled: true, executed: false };
+      return { handled: true, executed: false, allowFallback: false };
     }
 
     void executeExpAttackFlow(attackOption);
-    return { handled: true, executed: true };
+    return { handled: true, executed: true, allowFallback: false };
   }
   
   function getPP(index) {
@@ -1170,6 +1213,10 @@
       const match = m.querySelector(".divMoveParams")?.textContent?.match(/(\d+)\/\d+/);
       if (match && parseInt(match[1]) <= 0) return true;
     }
+
+    const lowestAttackPP = getLowestRemainingAttackPP();
+    if (lowestAttackPP !== null && shouldHealByAttackReserve(lowestAttackPP)) return true;
+
     return false;
   }
   
@@ -1237,9 +1284,19 @@
       for (const step of sequence) {
         if (step.type === "attack") {
           for (let r = 0; r < (step.count || 1); r++) {
+            const pp = getPP(step.index);
+            if (!hasEnoughAttackPP(pp)) {
+              queueHealAfterFight(`🏥 Комбо: у атаки ${step.index + 1} осталось ${pp} PP, нужен хил`);
+              return false;
+            }
+
             if (!clickAttack(step.index)) {
               log(`❌ Комбо прервано`, 'COMBO');
               return false;
+            }
+            const remainingPp = Math.max(pp - 1, 0);
+            if (shouldHealByAttackReserve(remainingPp)) {
+              queueHealAfterFight(`🏥 Комбо: после атаки ${step.index + 1} осталось ${remainingPp} PP, после боя идём лечиться`);
             }
             if (r < (step.count || 1) - 1) await delay(comboDelay);
           }
@@ -1296,14 +1353,17 @@
       }
 
       const pp = getPP(i);
-      if (pp <= 0) {
-        log(`📋 Правило: атака ${i+1} выбрана, но PP закончились`, 'WARN');
-        needHealAfterLimit = true;
+      if (!hasEnoughAttackPP(pp)) {
+        queueHealAfterFight(`🏥 Правило: у атаки ${i+1} осталось ${pp} PP, нужен хил`);
         return { executed: false, blocked: true };
       }
       
       if (clickAttack(i)) {
         attackCounter[i] = usageCount + 1;
+        const remainingPp = Math.max(pp - 1, 0);
+        if (shouldHealByAttackReserve(remainingPp)) {
+          queueHealAfterFight(`🏥 Правило: после атаки ${i+1} осталось ${remainingPp} PP, после боя идём лечиться`);
+        }
 
         if (against) {
           log(`📋 Правило: атака ${i+1} против "${against}" (${attackCounter[i]}${hasLimit ? `/${countLimit}` : ""})`, 'RULE');
@@ -1326,13 +1386,46 @@
   }
   
   function attackDefault() {
-    for (let i = 0; i < 4; i++) {
-      if (getPP(i) > 0 && clickAttack(i)) {
-        log(`Обычная атака ${i+1}`, 'FIGHT');
+    const attackOptions = getAvailableAttackOptions();
+    for (const option of attackOptions) {
+      if (hasEnoughAttackPP(option.pp) && clickAttack(option.index)) {
+        const remainingPp = Math.max(option.pp - 1, 0);
+        if (shouldHealByAttackReserve(remainingPp)) {
+          queueHealAfterFight(`🏥 Обычные атаки: после атаки ${option.index + 1} осталось ${remainingPp} PP, после боя идём лечиться`);
+        }
+        log(`Обычная атака ${option.index+1}`, 'FIGHT');
         return true;
       }
     }
+
+    if (attackOptions.length) {
+      const lowestAttackPP = getLowestRemainingAttackPP();
+      queueHealAfterFight(`🏥 Обычные атаки: минимальный остаток PP ${lowestAttackPP ?? 0}, нужен хил`);
+    }
+
     return false;
+  }
+
+  function attackFallback(reason = "") {
+    const attackOptions = getAvailableAttackOptions();
+    const fallbackOption = attackOptions.find(option => option.pp > 0);
+    if (!fallbackOption) {
+      queueHealAfterFight(reason || "🏥 Резервный сценарий: доступных атак не осталось, нужен хил");
+      return false;
+    }
+
+    if (!clickAttack(fallbackOption.index)) {
+      queueHealAfterFight(reason || `🏥 Резервный сценарий: не удалось применить атаку ${fallbackOption.index + 1}, нужен хил`);
+      return false;
+    }
+
+    const remainingPp = Math.max(fallbackOption.pp - 1, 0);
+    if (shouldHealByAttackReserve(remainingPp)) {
+      queueHealAfterFight(`🏥 Резервный сценарий: после атаки ${fallbackOption.index + 1} осталось ${remainingPp} PP, после боя идём лечиться`);
+    }
+
+    log(`🛟 Резервный сценарий: добиваем бой атакой ${fallbackOption.index + 1}${reason ? ` (${reason})` : ""}`, 'WARN');
+    return true;
   }
   
   function attack() {
@@ -1345,18 +1438,30 @@
     if (useComboMode && enemyId && !isExecutingCombo) {
       const comboSeq = getComboForEnemy(enemyId);
       if (comboSeq?.length) {
-        executeComboSequence(comboSeq);
+        executeComboSequence(comboSeq).then((executed) => {
+          if (!executed && isInFight() && !healing && !healingInProgress) {
+            attackFallback('комбо недоступно');
+          }
+        });
         return;
       }
     }
 
     const expAttackResult = tryExpAttack();
-    if (expAttackResult.handled) return;
+    if (expAttackResult.handled) {
+      if (!expAttackResult.executed && expAttackResult.allowFallback && isInFight()) {
+        attackFallback('автокач недоступен');
+      }
+      return;
+    }
     
     // Проверка правил атак
     const ruleResult = attackByRules();
     if (ruleResult.executed) return;
-    if (ruleResult.blocked) return;
+    if (ruleResult.blocked) {
+      attackFallback('правило недоступно');
+      return;
+    }
     
     // Обычная атака
     attackDefault();
@@ -1382,12 +1487,14 @@
     const locEl = document.getElementById("gb-location");
     const modeEl = document.getElementById("gb-mode-status");
     const expEl = document.getElementById("gb-exp-status");
+    const healEl = document.getElementById("gb-heal-status");
     
     if (killsEl) killsEl.textContent = stats.kills;
     if (creditsEl) creditsEl.textContent = stats.credits;
     if (dropsEl) dropsEl.textContent = getDropItemsTotal();
     if (locEl) locEl.textContent = currentLocation || "---";
     if (modeEl) modeEl.textContent = useComboMode ? "🔥 КОМБО" : "📋 ПРАВИЛА";
+    if (healEl) healEl.textContent = getAutoHealStatusText();
     if (expEl) {
       expEl.textContent = getExpStatusText();
       expEl.style.color = isExpConfigured() ? "#fbbf24" : "#888";
@@ -1624,9 +1731,12 @@
           <input id="pause-on-shiny" type="checkbox" ${pauseOnShiny ? "checked" : ""}>
           <label for="pause-on-shiny" style="color:#888;">🌟 Останавливать бота на любом shiny/special окрасе</label>
         </div>
-        <div style="margin-bottom:12px;">
-          <label style="color:#888;">💚 ПОРОГ HP: ${hpThreshold}%</label>
+        <div style="margin-bottom:12px; padding:8px; background:rgba(0,0,0,0.25); border:1px solid #2ecc71; border-radius:6px;">
+          <label style="color:#888; display:block; margin-bottom:8px;">🏥 ПРАВИЛА АВТОХИЛА</label>
+          <label id="hp-range-label" style="color:#888; display:block;">💚 Если HP меньше: ${hpThreshold}%</label>
           <input id="hp-range" type="range" min="0" max="100" value="${hpThreshold}" style="width:100%;">
+          <label id="attack-heal-range-label" style="color:#888; display:block; margin-top:10px;">⚔️ Если PP меньше или равно: ${getAttackHealThresholdValue()}</label>
+          <input id="attack-heal-range" type="range" min="0" max="20" value="${getAttackHealThresholdValue()}" style="width:100%;">
         </div>
         <div style="margin-bottom:12px;">
           <label style="color:#888;">⏱️ ЗАДЕРЖКИ АТАК (мс):</label>
@@ -1656,17 +1766,23 @@
       afkEnemyIds = document.getElementById("afk-enemies-input").value;
       pauseOnShiny = document.getElementById("pause-on-shiny").checked;
       hpThreshold = parseInt(document.getElementById("hp-range").value);
+      attackHealThreshold = parseInt(document.getElementById("attack-heal-range").value);
       attackDelayMin = parseInt(document.getElementById("attack-min").value);
       attackDelayMax = parseInt(document.getElementById("attack-max").value);
       moveDelay = parseInt(document.getElementById("move-delay").value);
       comboDelay = parseInt(document.getElementById("combo-delay").value);
       saveData();
+      updateUI();
       popup.style.display = "none";
       log("Настройки сохранены");
     };
     
     const hpRange = document.getElementById("hp-range");
-    hpRange.oninput = () => hpRange.previousElementSibling.textContent = `💚 ПОРОГ HP: ${hpRange.value}%`;
+    const hpRangeLabel = document.getElementById("hp-range-label");
+    const attackHealRange = document.getElementById("attack-heal-range");
+    const attackHealRangeLabel = document.getElementById("attack-heal-range-label");
+    hpRange.oninput = () => hpRangeLabel.textContent = `💚 Если HP меньше: ${hpRange.value}%`;
+    attackHealRange.oninput = () => attackHealRangeLabel.textContent = `⚔️ Если PP меньше или равно: ${attackHealRange.value}`;
   }
   
   function createUI() {
@@ -1701,6 +1817,7 @@
           <div>📦 Вещей: <span id="gb-stats-drops">0</span></div>
           <div>📍 Локация: <span id="gb-location">---</span></div>
           <div>🎮 Режим: <span id="gb-mode-status">📋 ПРАВИЛА</span></div>
+          <div>🏥 Автохил: <span id="gb-heal-status">${getAutoHealStatusText()}</span></div>
           <div>⭐ <span id="gb-exp-status">Автокач выключен</span></div>
         </div>
         

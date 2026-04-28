@@ -159,9 +159,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       return true;
     },
     showNotification: () => {
+      const title = request.data?.title || request.title || 'Game Bot';
+      const message = request.data?.message || request.message || 'Новое событие';
+
       chrome.notifications.create({
-        title: request.title || 'Game Bot',
-        message: request.message,
+        title,
+        message,
         iconUrl: 'data:image/png;base64,...',
         type: 'basic'
       });

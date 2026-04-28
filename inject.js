@@ -5,6 +5,11 @@
   
   const SUPPORTED_GAME_HOSTS = new Set(['game.league17.ru', 'eu.league17.ru', 'league17.ru']);
   const MAX_RECENT_DROPS = 30;
+  const EXP_ALLOWED_ATTACK_NAMES = ["Замедленная бомба", "Крик баньши"];
+  const EXP_FORBIDDEN_WEATHER_CODES = ["w4"];
+  const EXP_CARD_WAIT_TIMEOUT_MS = 2200;
+  const EXP_CARD_WAIT_INTERVAL_MS = 150;
+  const EXP_TARGET_PICKER_TIMEOUT_MS = 1800;
   
   // ===== ПРОВЕРКА САЙТА =====
   if (!SUPPORTED_GAME_HOSTS.has(window.location.hostname)) {
@@ -44,13 +49,14 @@
   let isExecutingCombo = false;
   
   // EXP SYSTEM
-  let expConfig = { attack: "", swap: "", targetLevel: 0 };
+  let expConfig = createExpConfigSnapshot();
   
   // STATS
   const DEFAULT_STATS = Object.freeze({ kills: 0, credits: 0, fights: 0, items: {}, enemies: [], recentDrops: [] });
   let stats = createStatsSnapshot();
   let lastAlert = "";
   let attackCounter = {};
+  let expLevelCheckInProgress = false;
   
   // SETTINGS
   let hpThreshold = 40;
@@ -298,6 +304,42 @@
     };
   }
 
+  function createExpConfigSnapshot(source = {}) {
+    const targetPokemonId = String(source.targetPokemonId ?? source.swap ?? "").trim();
+    const forbiddenWeatherCodes = Array.isArray(source.forbiddenWeatherCodes)
+      ? source.forbiddenWeatherCodes.map(code => String(code || "").trim()).filter(Boolean)
+      : EXP_FORBIDDEN_WEATHER_CODES;
+
+    return {
+      attack: String(source.attack || "").trim(),
+      swap: targetPokemonId,
+      targetPokemonId,
+      targetLevel: Math.max(0, parseInt(source.targetLevel, 10) || 0),
+      currentLevel: Math.max(0, parseInt(source.currentLevel, 10) || 0),
+      stopReason: String(source.stopReason || "").trim(),
+      forbiddenWeatherCodes: forbiddenWeatherCodes.length ? forbiddenWeatherCodes : [...EXP_FORBIDDEN_WEATHER_CODES]
+    };
+  }
+
+  function isExpConfigured() {
+    return Boolean(expConfig.targetPokemonId) && expConfig.targetLevel > 0;
+  }
+
+  function resetExpRuntimeState(options = {}) {
+    const { keepCurrentLevel = true } = options;
+    expConfig.currentLevel = keepCurrentLevel ? expConfig.currentLevel : 0;
+    expConfig.stopReason = "";
+  }
+
+  function getExpStatusText() {
+    if (!isExpConfigured()) return "Автокач выключен";
+
+    const botState = auto ? "ON" : "OFF";
+    const currentLevel = expConfig.currentLevel > 0 ? expConfig.currentLevel : "--";
+    const stopSuffix = expConfig.stopReason ? ` | стоп: ${expConfig.stopReason}` : "";
+    return `Автокач ${botState} | ID ${expConfig.targetPokemonId} | lvl ${currentLevel}/${expConfig.targetLevel}${stopSuffix}`;
+  }
+
   function getDropItemsTotal() {
     return Object.values(stats.items || {}).reduce((total, amount) => total + (parseInt(amount, 10) || 0), 0);
   }
@@ -388,8 +430,10 @@
 
   function pauseAuto(reason, type = 'WARN') {
     auto = false;
+    expConfig.stopReason = String(reason || "").trim();
     saveData();
     updateAutoButtonUI();
+    updateUI();
     log(reason, type);
   }
 
@@ -624,7 +668,7 @@
         attackDelayMax = parsed.attackDelayMax ?? 5000;
         moveDelay = parsed.moveDelay ?? 2000;
         comboDelay = parsed.comboDelay ?? 1500;
-        expConfig = parsed.expConfig || { attack: "", swap: "", targetLevel: 0 };
+        expConfig = createExpConfigSnapshot(parsed.expConfig || {});
         stats = createStatsSnapshot(parsed.stats || DEFAULT_STATS);
       }
     } catch(e) { log(`Ошибка загрузки: ${e}`, 'ERROR'); }
@@ -700,6 +744,219 @@
   
   function getAttackElements() {
     return [...document.querySelectorAll("#divFightI .divMoveInfo.clickable")];
+  }
+
+  function normalizeAttackName(value) {
+    return String(value || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  }
+
+  function getAttackName(attackEl) {
+    if (!attackEl) return "";
+
+    const rawText = attackEl.querySelector(".divMoveName, .title, .name, b")?.textContent
+      || attackEl.getAttribute("data-title")
+      || attackEl.textContent
+      || "";
+
+    return rawText
+      .replace(/\d+\s*\/\s*\d+/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function getFightWeatherCode() {
+    const weatherIcon = document.querySelector("#divFightWeather .iconweather");
+    if (!weatherIcon) return "";
+    return [...weatherIcon.classList].find(className => /^w\d+$/i.test(className)) || "";
+  }
+
+  function isForbiddenExpWeather(weatherCode = getFightWeatherCode()) {
+    return Boolean(weatherCode) && expConfig.forbiddenWeatherCodes.includes(weatherCode);
+  }
+
+  function getAvailableAttackOptions() {
+    return getAttackElements().map((element, index) => ({
+      element,
+      index,
+      pp: getPP(index),
+      name: getAttackName(element),
+      normalizedName: normalizeAttackName(getAttackName(element))
+    }));
+  }
+
+  function getAllowedExpAttackOption() {
+    const allowedNames = new Set(EXP_ALLOWED_ATTACK_NAMES.map(normalizeAttackName));
+    return getAvailableAttackOptions().find(option => option.pp > 0 && [...allowedNames].some(name => option.normalizedName.includes(name))) || null;
+  }
+
+  function escapeAttributeValue(value) {
+    if (window.CSS?.escape) return window.CSS.escape(String(value || ""));
+    return String(value || "").replace(/(["\\])/g, "\\$1");
+  }
+
+  function getTargetPokemonCard(targetPokemonId = expConfig.targetPokemonId) {
+    if (!targetPokemonId) return null;
+
+    const escapedTargetId = escapeAttributeValue(targetPokemonId);
+    return document.querySelector(`.divElements .poke.pokemonBoxTiny[data-p-id="${escapedTargetId}"], .divContext .pokemonBoxTiny[data-p-id="${escapedTargetId}"], [data-p-id="${escapedTargetId}"]`);
+  }
+
+  function getPokemonLevelFromCard(card) {
+    const levelText = card?.querySelector(".shorts .lvl")?.textContent || "";
+    const match = levelText.match(/(\d+)/);
+    return match ? parseInt(match[1], 10) : 0;
+  }
+
+  function getPokemonCardElement(element) {
+    if (!element) return null;
+    if (element.matches?.(".poke.pokemonBoxTiny[data-p-id]")) return element;
+    return element.querySelector?.(".poke.pokemonBoxTiny[data-p-id]") || null;
+  }
+
+  function getExpTargetPickerItems() {
+    return [...document.querySelectorAll(".divElements .divElement.clickable, .divContext .pokemonBoxTiny, .divContext [data-p-id]")];
+  }
+
+  function getExpTargetPickerItem(targetPokemonId = expConfig.targetPokemonId) {
+    if (!targetPokemonId) return null;
+
+    const escapedTargetId = escapeAttributeValue(targetPokemonId);
+    const exactMatch = document.querySelector(`.divElements .poke.pokemonBoxTiny[data-p-id="${escapedTargetId}"], .divContext [data-p-id="${escapedTargetId}"]`);
+    if (exactMatch) {
+      return exactMatch.closest(".divElement.clickable") || exactMatch.closest(".pokemonBoxTiny") || exactMatch;
+    }
+
+    return getExpTargetPickerItems().find(item => {
+      const card = getPokemonCardElement(item) || item;
+      const directId = card.getAttribute?.("data-p-id") || card.dataset?.pId;
+      const nestedId = item.querySelector?.("[data-p-id]")?.getAttribute("data-p-id");
+      return String(directId || nestedId || "") === String(targetPokemonId);
+    }) || null;
+  }
+
+  async function pickExpTargetPokemon(targetPokemonId = expConfig.targetPokemonId) {
+    const pickerOpened = await waitFor(() => getExpTargetPickerItems().length > 0, EXP_TARGET_PICKER_TIMEOUT_MS, 100);
+    if (!pickerOpened) return { pickerOpened: false, selected: true };
+
+    const targetItem = getExpTargetPickerItem(targetPokemonId);
+    if (!targetItem) return { pickerOpened: true, selected: false };
+
+    const targetCard = getPokemonCardElement(targetItem) || getTargetPokemonCard(targetPokemonId);
+    const targetLevel = getPokemonLevelFromCard(targetCard);
+
+    targetItem.click();
+    await waitFor(() => getExpTargetPickerItems().length === 0, 3000, 100);
+    await delay(250);
+    return { pickerOpened: true, selected: true, targetLevel };
+  }
+
+  async function waitForTargetPokemonCard(targetPokemonId = expConfig.targetPokemonId, timeout = EXP_CARD_WAIT_TIMEOUT_MS, interval = EXP_CARD_WAIT_INTERVAL_MS) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeout) {
+      const card = getTargetPokemonCard(targetPokemonId);
+      if (card) return card;
+      await delay(interval);
+    }
+    return getTargetPokemonCard(targetPokemonId);
+  }
+
+  async function verifyExpTargetProgress(attackName, options = {}) {
+    const manageLock = options.manageLock ?? true;
+    const preferredLevel = Math.max(0, parseInt(options.preferredLevel, 10) || 0);
+    if (!isExpConfigured() || (manageLock && expLevelCheckInProgress)) return;
+    if (manageLock) expLevelCheckInProgress = true;
+
+    try {
+      const targetPokemonId = expConfig.targetPokemonId;
+      if (preferredLevel > 0) {
+        expConfig.currentLevel = preferredLevel;
+        expConfig.stopReason = "";
+        saveData();
+        updateUI();
+        log(`Автокач: ${attackName} -> data-p-id ${targetPokemonId} lvl ${preferredLevel}/${expConfig.targetLevel}`, 'EXP');
+
+        if (preferredLevel >= expConfig.targetLevel) {
+          pauseAuto(`Автокач завершён: data-p-id ${targetPokemonId} достиг lvl ${preferredLevel}/${expConfig.targetLevel}`, 'EXP');
+        }
+        return;
+      }
+
+      const card = await waitForTargetPokemonCard(targetPokemonId);
+      if (!card) {
+        pauseAuto(`Автокач остановлен: не найден data-p-id ${targetPokemonId} после атаки ${attackName}`, 'EXP');
+        return;
+      }
+
+      const level = getPokemonLevelFromCard(card);
+      if (!level) {
+        pauseAuto(`Автокач остановлен: не удалось прочитать уровень у data-p-id ${targetPokemonId}`, 'EXP');
+        return;
+      }
+
+      expConfig.currentLevel = level;
+      expConfig.stopReason = "";
+      saveData();
+      updateUI();
+      log(`Автокач: ${attackName} -> data-p-id ${targetPokemonId} lvl ${level}/${expConfig.targetLevel}`, 'EXP');
+
+      if (level >= expConfig.targetLevel) {
+        pauseAuto(`Автокач завершён: data-p-id ${targetPokemonId} достиг lvl ${level}/${expConfig.targetLevel}`, 'EXP');
+      }
+    } finally {
+      if (manageLock) expLevelCheckInProgress = false;
+    }
+  }
+
+  async function executeExpAttackFlow(attackOption) {
+    if (!attackOption || expLevelCheckInProgress || !isExpConfigured()) return;
+    expLevelCheckInProgress = true;
+
+    try {
+      if (!clickAttack(attackOption.index)) {
+        pauseAuto(`Автокач остановлен: слот атаки ${attackOption.index + 1} недоступен`, 'EXP');
+        return;
+      }
+
+      const attackName = attackOption.name || `Атака ${attackOption.index + 1}`;
+      log(`Автокач: выбрана атака "${attackName}"`, 'EXP');
+
+      const pickResult = await pickExpTargetPokemon(expConfig.targetPokemonId);
+      if (pickResult.pickerOpened && !pickResult.selected) {
+        pauseAuto(`Автокач остановлен: в окне выбора не найден data-p-id ${expConfig.targetPokemonId}`, 'EXP');
+        return;
+      }
+
+      if (pickResult.pickerOpened) {
+        log(`Автокач: выбран монстр data-p-id ${expConfig.targetPokemonId}`, 'EXP');
+      }
+
+      await verifyExpTargetProgress(attackName, { manageLock: false, preferredLevel: pickResult.targetLevel });
+    } finally {
+      expLevelCheckInProgress = false;
+    }
+  }
+
+  function tryExpAttack() {
+    if (!isExpConfigured()) return { handled: false, executed: false };
+    if (expLevelCheckInProgress) return { handled: true, executed: false };
+
+    const weatherCode = getFightWeatherCode();
+    if (isForbiddenExpWeather(weatherCode)) {
+      pauseAuto(`Автокач остановлен: запрещённая погода ${weatherCode}`, 'EXP');
+      return { handled: true, executed: false };
+    }
+
+    const attackOption = getAllowedExpAttackOption();
+    if (!attackOption) {
+      pauseAuto(`Автокач остановлен: нет доступной атаки (${EXP_ALLOWED_ATTACK_NAMES.join(' / ')})`, 'EXP');
+      return { handled: true, executed: false };
+    }
+
+    void executeExpAttackFlow(attackOption);
+    return { handled: true, executed: true };
   }
   
   function getPP(index) {
@@ -1064,6 +1321,9 @@
         return;
       }
     }
+
+    const expAttackResult = tryExpAttack();
+    if (expAttackResult.handled) return;
     
     // Проверка правил атак
     const ruleResult = attackByRules();
@@ -1101,8 +1361,8 @@
     if (locEl) locEl.textContent = currentLocation || "---";
     if (modeEl) modeEl.textContent = useComboMode ? "🔥 КОМБО" : "📋 ПРАВИЛА";
     if (expEl) {
-      expEl.textContent = expConfig.targetLevel ? `⭐ Кач до ${expConfig.targetLevel} уровня` : "⭐ Автокач выключен";
-      expEl.style.color = expConfig.targetLevel ? "#fbbf24" : "#888";
+      expEl.textContent = getExpStatusText();
+      expEl.style.color = isExpConfigured() ? "#fbbf24" : "#888";
     }
   }
   
@@ -1273,27 +1533,25 @@
     div.style.paddingTop = "8px";
     div.style.borderTop = "1px solid #fbbf24";
     div.innerHTML = `
-      <label style="color:#fbbf24;">⭐ АВТОКАЧ (атака → ID → уровень):</label>
+      <label style="color:#fbbf24;">⭐ АВТОКАЧ (ID → уровень):</label>
       <div style="display:flex; gap:6px; margin-top:5px;">
-        <input id="gb-exp-attack" placeholder="атака" value="${expConfig.attack}" style="width:55px; padding:4px; background:#111; border:1px solid #fbbf24; color:#fbbf24; border-radius:4px;">
-        <input id="gb-exp-swap" placeholder="ID покемона" value="${expConfig.swap}" style="flex:1; padding:4px; background:#111; border:1px solid #fbbf24; color:#fbbf24; border-radius:4px;">
+        <input id="gb-exp-target-id" placeholder="ID покемона" value="${expConfig.targetPokemonId}" style="flex:1; padding:4px; background:#111; border:1px solid #fbbf24; color:#fbbf24; border-radius:4px;">
         <input id="gb-exp-level" placeholder="цель" value="${expConfig.targetLevel}" style="width:55px; padding:4px; background:#111; border:1px solid #fbbf24; color:#fbbf24; border-radius:4px;">
       </div>
-      <small>Бьёт атакой → проверяет уровень → при достижении цели останавливает бота</small>
+      <small id="gb-exp-panel-status">Разрешены: Замедленная бомба или Крик баньши. После атаки бот ищет точный data-p-id и проверяет его уровень.</small>
     `;
     panel.appendChild(div);
-    
-    document.getElementById("gb-exp-attack").oninput = () => {
-      expConfig.attack = document.getElementById("gb-exp-attack").value;
+
+    document.getElementById("gb-exp-target-id").oninput = () => {
+      expConfig.targetPokemonId = document.getElementById("gb-exp-target-id").value.trim();
+      expConfig.swap = expConfig.targetPokemonId;
+      resetExpRuntimeState({ keepCurrentLevel: false });
       saveData();
       updateUI();
     };
-    document.getElementById("gb-exp-swap").oninput = () => {
-      expConfig.swap = document.getElementById("gb-exp-swap").value;
-      saveData();
-    };
     document.getElementById("gb-exp-level").oninput = () => {
       expConfig.targetLevel = parseInt(document.getElementById("gb-exp-level").value) || 0;
+      resetExpRuntimeState({ keepCurrentLevel: false });
       saveData();
       updateUI();
     };
@@ -1457,8 +1715,10 @@
     const autoBtn = c.querySelector("#gb-auto-btn");
     autoBtn.onclick = () => {
       auto = !auto;
+      if (auto) resetExpRuntimeState({ keepCurrentLevel: true });
       saveData();
       updateAutoButtonUI();
+      updateUI();
       if (auto) {
         ensureWildMonstersEnabled();
       } else {
@@ -1531,12 +1791,20 @@
   }
   
   function checkCaptcha() {
-    const hasCaptcha = !!document.querySelector("iframe[src*='captcha'], .captcha, #captcha");
+    const fightCaptcha = document.querySelector("#divFightCaptcha, .divFightCaptcha");
+    const hasVisibleFightCaptcha = isVisibleElement(fightCaptcha)
+      && !!fightCaptcha.querySelector("iframe[src*='recaptcha'], iframe[title='reCAPTCHA'], #g-recaptcha-response");
+    const hasVisibleGenericCaptcha = [...document.querySelectorAll("iframe[src*='recaptcha'], iframe[src*='captcha'], .captcha, #captcha")]
+      .some(isVisibleElement);
+    const hasCaptcha = hasVisibleFightCaptcha || hasVisibleGenericCaptcha;
+
     if (hasCaptcha && !captchaPaused) {
       captchaPaused = true;
-      auto = false;
-      log("⚠️ КАПЧА! Бот остановлен", 'ERROR');
-      updateAutoButtonUI();
+      pauseAuto("⚠️ Обнаружена капча: бот остановлен", 'ERROR');
+      postToExtension('showNotification', {
+        title: 'Game Bot',
+        message: 'Обнаружена капча. Бот остановлен до ручного вмешательства.'
+      });
     } else if (!hasCaptcha) { captchaPaused = false; }
     return hasCaptcha;
   }

@@ -1157,7 +1157,7 @@
         return false;
       }
 
-      if (paths.back && !await runPath(paths.back)) {
+      if (paths?.back && !await runPath(paths.back)) {
         log("Не удалось вернуться по обратному пути", 'ERROR');
       }
 

@@ -1137,19 +1137,20 @@
 
     try {
       const paths = getHealPaths();
-      if (!paths?.forward) {
-        log("Нет пути к лекарю!", 'ERROR');
+      const hasLocalHealButton = !!document.querySelector(".btnLocHeal");
+      if (paths?.forward) {
+        if (!await runPath(paths.forward)) {
+          log("Не удалось дойти до лекаря", 'ERROR');
+          healRetryBlockedUntil = Date.now() + 5000;
+          return false;
+        }
+
+        await delay(500);
+      } else if (!hasLocalHealButton) {
+        log("Нет пути к лекарю и кнопка лечения в текущей локации не найдена", 'ERROR');
         healRetryBlockedUntil = Date.now() + 5000;
         return false;
       }
-
-      if (!await runPath(paths.forward)) {
-        log("Не удалось дойти до лекаря", 'ERROR');
-        healRetryBlockedUntil = Date.now() + 5000;
-        return false;
-      }
-
-      await delay(500);
 
       if (!await performHealSequence()) {
         healRetryBlockedUntil = Date.now() + 5000;

@@ -97,7 +97,8 @@
     "Лиственный подлесок": { forward: ["btnGo7", "btnGo9", "btnGo1", "btnGo3"], back: ["btnGo1", "btnGo9", "btnGo7", "btnGo450"] },
     "Безлюдная дорога": { forward: ["btnGo33", "btnGo35"], back: ["btnGo33", "btnGo42"] },
     "Заросшая тропа": { forward: ["btnGo33", "btnGo35"], back: ["btnGo33", "btnGo41"] },
-    "Глухой колючий лес": { forward: ["btnGo41", "btnGo33", "btnGo35"], back: ["btnGo33", "btnGo41", "btnGo45"] }
+    "Глухой колючий лес": { forward: ["btnGo41", "btnGo33", "btnGo35"], back: ["btnGo33", "btnGo41", "btnGo45"] },
+    "Дорога №4": { forward: ["btnGo52", "btnGo53"], back: ["btnGo52", "btnGo19"] },
   };
   
   // ===== ЛОГГЕР =====

@@ -1538,9 +1538,10 @@
     const wrap = document.getElementById("gb-combo-list");
     if (!wrap) return;
     wrap.innerHTML = '';
-    
-    for (let i = 0; i < 3; i++) {
-      const combo = combos[i] || { enemy: "", sequence: [] };
+
+    const count = combos.length;
+    for (let i = 0; i < count; i++) {
+      const combo = combos[i];
       const card = document.createElement("div");
       card.style.cssText = "background:rgba(0,0,0,0.4); margin-bottom:12px; padding:8px; border-radius:8px; border-left:3px solid #f39c12;";
       card.innerHTML = `
@@ -1554,12 +1555,12 @@
         <button class="gb-add-action" data-index="${i}" style="width:100%; padding:4px; background:#4fa3f5; border:none; border-radius:4px; color:#fff; cursor:pointer;">+ ДОБАВИТЬ</button>
       `;
       wrap.appendChild(card);
-      
+
       const actionsDiv = card.querySelector(`.combo-actions-${i}`);
       if (combo.sequence?.length) {
         combo.sequence.forEach(step => addComboActionRow(actionsDiv, step));
       }
-      
+
       card.querySelector(`#combo_enemy_${i}`).oninput = () => saveComboSequence(i);
       card.querySelector(`.gb-add-action`).onclick = () => {
         addComboActionRow(actionsDiv, null);
@@ -1567,12 +1568,22 @@
       };
       card.querySelector(`.gb-del-combo`).onclick = () => {
         if (confirm(`Удалить комбо ${i+1}?`)) {
-          combos[i] = { enemy: "", sequence: [] };
+          combos.splice(i, 1);
           saveData();
           renderComboList();
         }
       };
     }
+
+    const addComboBtn = document.createElement("button");
+    addComboBtn.textContent = "+ НОВОЕ КОМБО";
+    addComboBtn.style.cssText = "width:100%; padding:6px; background:#f39c12; border:none; border-radius:4px; color:#000; cursor:pointer; font-weight:bold; margin-top:4px;";
+    addComboBtn.onclick = () => {
+      combos.push({ enemy: "", sequence: [] });
+      saveData();
+      renderComboList();
+    };
+    wrap.appendChild(addComboBtn);
   }
   
   function addComboActionRow(container, step) {
@@ -1830,7 +1841,7 @@
         
         <div id="gb-combo-panel" style="display:none;">
           <label style="color:#888;">🔥 КОМБО (задержка ${comboDelay}мс)</label>
-          <div id="gb-combo-list" style="margin-top:6px; max-height:300px; overflow-y:auto;"></div>
+          <div id="gb-combo-list" style="margin-top:6px; max-height:500px; overflow-y:auto;"></div>
         </div>
       </div>
     `;

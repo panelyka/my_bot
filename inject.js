@@ -99,6 +99,7 @@
     "Заросшая тропа": { forward: ["btnGo33", "btnGo35"], back: ["btnGo33", "btnGo41"] },
     "Глухой колючий лес": { forward: ["btnGo41", "btnGo33", "btnGo35"], back: ["btnGo33", "btnGo41", "btnGo45"] },
     "Дорога №4": { forward: ["btnGo52", "btnGo53"], back: ["btnGo52", "btnGo19"] },
+    "Библиотека": { forward: ["btnGo160", "btnGo213"], back: ["btnGo160", "btnGo744"] },
   };
   
   // ===== ЛОГГЕР =====

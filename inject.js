@@ -89,7 +89,7 @@
     "Затопленный грот": { forward: ["btnGo332", "btnGo889", "btnGo888", "btnGo527", "btnGo335"], back: ["btnGo527", "btnGo888", "btnGo889", "btnGo332", "btnGo890"] },
     "Маршрут 16": { forward: ["btnGo482", "btnGo481", "btnGo485"], back: ["btnGo481", "btnGo482", "btnGo500"] },
     "Пастбище": { forward: ["btnGo468", "btnGo419", "btnGo457"], back: ["btnGo419", "btnGo468", "btnGo465"] },
-    "Пасека": { forward: ["btnGo776", "btnGo59", "btnGo47", "btnGo50"], back: ["btnGo47", "btnGo59", "btnGo776", "btnGo779"] },
+    "Пасека": { forward: ["btnGo776", "btnGo59", "btnGo47", "btnGo17","btnGo10","btnGo1","btnGo3"], back: ["btnGo1", "btnGo10", "btnGo17", "btnGo47", "btnGo59", "btnGo776", "btnGo779"] },
     "Пещера Потатов": { forward: ["btnGo796"], back: ["btnGo168"] },
     "Дорога №2": { forward: ["btnGo9", "btnGo1", "btnGo3"], back: ["btnGo1", "btnGo9", "btnGo18"] },
     "Дорога №3": { forward: ["btnGo10", "btnGo1", "btnGo3"], back: ["btnGo1", "btnGo10", "btnGo17"] },

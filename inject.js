@@ -1302,16 +1302,16 @@
             if (shouldHealByAttackReserve(remainingPp)) {
               queueHealAfterFight(`🏥 Комбо: после атаки ${step.index + 1} осталось ${remainingPp} PP, после боя идём лечиться`);
             }
-            if (r < (step.count || 1) - 1) await delay(comboDelay);
+            if (r < (step.count || 1) - 1) await waitFor(() => !isInFight() || getAttackElements().length > 0, 5000, 50);
           }
-          await delay(comboDelay);
+          await waitFor(() => !isInFight() || getAttackElements().length > 0, 5000, 50);
         } else if (step.type === "swap") {
           const swapped = await performSwap(step.id);
           if (!swapped) {
             log(`❌ Смена на ID ${step.id} не выполнена`, 'COMBO');
             return false;
           }
-          await delay(comboDelay);
+          await waitFor(() => !isInFight() || getAttackElements().length > 0, 5000, 50);
         }
       }
 

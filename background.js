@@ -53,16 +53,6 @@ chrome.runtime.onInstalled.addListener(() => {
   cachedStats = initialStats;
   
   chrome.storage.local.set({
-    settings: {
-      auto: true,
-      healPath: "",
-      healPathBack: "",
-      hpThreshold: 40,
-      attackDelayMin: 2000,
-      attackDelayMax: 5000,
-      moveDelay: 2000,
-      comboDelay: 1000
-    },
     stats: initialStats,
     logs: []
   });

@@ -61,7 +61,7 @@ chrome.runtime.onInstalled.addListener(() => {
       attackDelayMin: 2000,
       attackDelayMax: 5000,
       moveDelay: 2000,
-      comboDelay: 1500
+      comboDelay: 1000
     },
     stats: initialStats,
     logs: []

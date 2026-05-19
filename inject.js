@@ -64,7 +64,7 @@
   let attackDelayMin = 2000;
   let attackDelayMax = 5000;
   let moveDelay = 2000;
-  let comboDelay = 1500;
+  let comboDelay = 1000;
   let currentLocation = "";
   let suppressAutoHealUntilNextFight = false;
   let healRetryBlockedUntil = 0;
@@ -672,7 +672,7 @@
         attackDelayMin = parsed.attackDelayMin ?? 2000;
         attackDelayMax = parsed.attackDelayMax ?? 5000;
         moveDelay = parsed.moveDelay ?? 2000;
-        comboDelay = parsed.comboDelay ?? 1500;
+        comboDelay = parsed.comboDelay ?? 1000;
         expConfig = createExpConfigSnapshot(parsed.expConfig || {});
         stats = createStatsSnapshot(parsed.stats || DEFAULT_STATS);
       }
@@ -1894,6 +1894,19 @@
     };
     c.querySelector("#gb-settings-btn").onclick = () => {
       createSettingsPopup();
+      document.getElementById("heal-path-input").value = healPath;
+      document.getElementById("heal-back-input").value = healPathBack;
+      document.getElementById("surrender-enemies-input").value = surrenderEnemyIds;
+      document.getElementById("afk-enemies-input").value = afkEnemyIds;
+      document.getElementById("pause-on-shiny").checked = pauseOnShiny;
+      document.getElementById("hp-range").value = hpThreshold;
+      document.getElementById("hp-range-label").textContent = `💚 Если HP меньше: ${hpThreshold}%`;
+      document.getElementById("attack-heal-range").value = attackHealThreshold;
+      document.getElementById("attack-heal-range-label").textContent = `⚔️ Если PP меньше или равно: ${attackHealThreshold}`;
+      document.getElementById("attack-min").value = attackDelayMin;
+      document.getElementById("attack-max").value = attackDelayMax;
+      document.getElementById("move-delay").value = moveDelay;
+      document.getElementById("combo-delay").value = comboDelay;
       document.getElementById("gb-settings-popup").style.display = "block";
     };
     

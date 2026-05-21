@@ -101,6 +101,7 @@
     "Дорога №4": { forward: ["btnGo52", "btnGo53"], back: ["btnGo52", "btnGo19"] },
     "Библиотека": { forward: ["btnGo160", "btnGo213"], back: ["btnGo160", "btnGo744"] },
     "Маршрут 16": { forward: ["btnGo177", "btnGo206"], back: ["btnGo177", "btnGo176"] },
+    "Маршрут №3": { forward: ["btnGo576", "btnGo575","btnGo574", "btnGo566", "btnGo567"], back: ["btnGo566", "btnGo574","btnGo575", "btnGo576", "btnGo577"] },
   };
   
   // ===== ЛОГГЕР =====

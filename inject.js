@@ -72,6 +72,10 @@
   // Флаг для отслеживания необходимости лечения после лимита атак
   let needHealAfterLimit = false;
   
+  // Индексы атак, по которым отслеживается PP для запуска автохила (0-3)
+  // Хил запустится только когда ВСЕ отмеченные атаки имеют PP <= порога
+  let ppHealTrackedAttacks = [0, 1, 2, 3];
+  
   // ===== ВСТРОЕННЫЕ ПУТИ ЛЕЧЕНИЯ =====
   const HEAL_TEMPLATES = {
     "Старый парк": { forward: ["btnGo529", "btnGo527", "btnGo335"], back: ["btnGo527", "btnGo529", "btnGo341"] },
@@ -670,6 +674,7 @@
         pauseOnShiny = parsed.pauseOnShiny ?? true;
         hpThreshold = parsed.hpThreshold ?? 40;
         attackHealThreshold = parsed.attackHealThreshold ?? 1;
+        ppHealTrackedAttacks = Array.isArray(parsed.ppHealTrackedAttacks) ? parsed.ppHealTrackedAttacks : [0, 1, 2, 3];
         attackDelayMin = parsed.attackDelayMin ?? 2000;
         attackDelayMax = parsed.attackDelayMax ?? 5000;
         moveDelay = parsed.moveDelay ?? 2000;
@@ -685,6 +690,7 @@
     const data = {
       simpleRules, combos, useComboMode, auto,
       healPath, healPathBack, surrenderEnemyIds, afkEnemyIds, pauseOnShiny, hpThreshold, attackHealThreshold,
+      ppHealTrackedAttacks,
       attackDelayMin, attackDelayMax, moveDelay, comboDelay,
       expConfig, stats
     };
@@ -803,6 +809,18 @@
 
   function shouldHealByAttackReserve(pp) {
     return (parseInt(pp, 10) || 0) <= getAttackHealThresholdValue();
+  }
+
+  // Возвращает true только когда ВСЕ отслеживаемые атаки опустились до порога PP.
+  // clickedIndex/clickedRemainingPp — атака, которую только что использовали (её PP ещё не обновился в DOM).
+  function shouldHealByTrackedAttacksReserve(clickedIndex, clickedRemainingPp) {
+    if (!ppHealTrackedAttacks.length) return false;
+    const threshold = getAttackHealThresholdValue();
+    for (const idx of ppHealTrackedAttacks) {
+      const pp = (idx === clickedIndex) ? clickedRemainingPp : getPP(idx);
+      if (pp > threshold) return false;
+    }
+    return true;
   }
 
   function getLowestRemainingAttackPP() {
@@ -969,7 +987,7 @@
       const attackName = attackOption.name || `Атака ${attackOption.index + 1}`;
       log(`Автокач: выбрана атака "${attackName}"`, 'EXP');
       const remainingPp = Math.max((attackOption.pp || 0) - 1, 0);
-      if (shouldHealByAttackReserve(remainingPp)) {
+      if (shouldHealByTrackedAttacksReserve(attackOption.index, remainingPp)) {
         queueHealAfterFight(`🏥 Автокач: после "${attackName}" осталось ${remainingPp} PP, после боя идём лечиться`);
       }
 
@@ -1212,15 +1230,13 @@
       const hp = parseFloat(hpEl.style.width);
       if (!isNaN(hp) && hp < hpThreshold) return true;
     }
-    
-    const moves = document.querySelectorAll("#divFightI .moveBox");
-    for (const m of moves) {
-      const match = m.querySelector(".divMoveParams")?.textContent?.match(/(\d+)\/\d+/);
-      if (match && parseInt(match[1]) <= 0) return true;
-    }
 
-    const lowestAttackPP = getLowestRemainingAttackPP();
-    if (lowestAttackPP !== null && shouldHealByAttackReserve(lowestAttackPP)) return true;
+    // Проверяем все отслеживаемые атаки: если ВСЕ из них <= порогу PP → нужен хил
+    if (ppHealTrackedAttacks.length) {
+      const threshold = getAttackHealThresholdValue();
+      const allTrackedLow = ppHealTrackedAttacks.every(idx => getPP(idx) <= threshold);
+      if (allTrackedLow) return true;
+    }
 
     return false;
   }
@@ -1300,7 +1316,7 @@
               return false;
             }
             const remainingPp = Math.max(pp - 1, 0);
-            if (shouldHealByAttackReserve(remainingPp)) {
+            if (shouldHealByTrackedAttacksReserve(step.index, remainingPp)) {
               queueHealAfterFight(`🏥 Комбо: после атаки ${step.index + 1} осталось ${remainingPp} PP, после боя идём лечиться`);
             }
             if (r < (step.count || 1) - 1) await waitFor(() => !isInFight() || getAttackElements().length > 0, 5000, 50);
@@ -1359,14 +1375,16 @@
 
       const pp = getPP(i);
       if (!hasEnoughAttackPP(pp)) {
-        queueHealAfterFight(`🏥 Правило: у атаки ${i+1} осталось ${pp} PP, нужен хил`);
+        if (shouldHealByTrackedAttacksReserve(i, 0)) {
+          queueHealAfterFight(`🏥 Правило: у атаки ${i+1} осталось ${pp} PP, нужен хил`);
+        }
         return { executed: false, blocked: true };
       }
       
       if (clickAttack(i)) {
         attackCounter[i] = usageCount + 1;
         const remainingPp = Math.max(pp - 1, 0);
-        if (shouldHealByAttackReserve(remainingPp)) {
+        if (shouldHealByTrackedAttacksReserve(i, remainingPp)) {
           queueHealAfterFight(`🏥 Правило: после атаки ${i+1} осталось ${remainingPp} PP, после боя идём лечиться`);
         }
 
@@ -1395,7 +1413,7 @@
     for (const option of attackOptions) {
       if (hasEnoughAttackPP(option.pp) && clickAttack(option.index)) {
         const remainingPp = Math.max(option.pp - 1, 0);
-        if (shouldHealByAttackReserve(remainingPp)) {
+        if (shouldHealByTrackedAttacksReserve(option.index, remainingPp)) {
           queueHealAfterFight(`🏥 Обычные атаки: после атаки ${option.index + 1} осталось ${remainingPp} PP, после боя идём лечиться`);
         }
         log(`Обычная атака ${option.index+1}`, 'FIGHT');
@@ -1404,8 +1422,10 @@
     }
 
     if (attackOptions.length) {
-      const lowestAttackPP = getLowestRemainingAttackPP();
-      queueHealAfterFight(`🏥 Обычные атаки: минимальный остаток PP ${lowestAttackPP ?? 0}, нужен хил`);
+      if (shouldHealByTrackedAttacksReserve(null, 0)) {
+        const lowestAttackPP = getLowestRemainingAttackPP();
+        queueHealAfterFight(`🏥 Обычные атаки: минимальный остаток PP ${lowestAttackPP ?? 0}, нужен хил`);
+      }
     }
 
     return false;
@@ -1425,7 +1445,7 @@
     }
 
     const remainingPp = Math.max(fallbackOption.pp - 1, 0);
-    if (shouldHealByAttackReserve(remainingPp)) {
+    if (shouldHealByTrackedAttacksReserve(fallbackOption.index, remainingPp)) {
       queueHealAfterFight(`🏥 Резервный сценарий: после атаки ${fallbackOption.index + 1} осталось ${remainingPp} PP, после боя идём лечиться`);
     }
 
@@ -1753,6 +1773,13 @@
           <input id="hp-range" type="range" min="0" max="100" value="${hpThreshold}" style="width:100%;">
           <label id="attack-heal-range-label" style="color:#888; display:block; margin-top:10px;">⚔️ Если PP меньше или равно: ${getAttackHealThresholdValue()}</label>
           <input id="attack-heal-range" type="range" min="0" max="20" value="${getAttackHealThresholdValue()}" style="width:100%;">
+          <div style="margin-top:10px;">
+            <label style="color:#888; display:block; margin-bottom:6px;">🎯 Отслеживать PP атак для хила:</label>
+            <div style="display:flex; gap:12px; flex-wrap:wrap;">
+              ${[0,1,2,3].map(i => `<label style="color:#ccc; display:flex; align-items:center; gap:4px; cursor:pointer;"><input type="checkbox" id="pp-track-${i}" ${ppHealTrackedAttacks.includes(i) ? "checked" : ""}> Атака ${i+1}</label>`).join("")}
+            </div>
+            <small style="color:#666;">Хил запустится когда ВСЕ отмеченные атаки ≤ порогу PP</small>
+          </div>
         </div>
         <div style="margin-bottom:12px;">
           <label style="color:#888;">⏱️ ЗАДЕРЖКИ АТАК (мс):</label>
@@ -1783,6 +1810,7 @@
       pauseOnShiny = document.getElementById("pause-on-shiny").checked;
       hpThreshold = parseInt(document.getElementById("hp-range").value);
       attackHealThreshold = parseInt(document.getElementById("attack-heal-range").value);
+      ppHealTrackedAttacks = [0,1,2,3].filter(i => document.getElementById(`pp-track-${i}`)?.checked);
       attackDelayMin = parseInt(document.getElementById("attack-min").value);
       attackDelayMax = parseInt(document.getElementById("attack-max").value);
       moveDelay = parseInt(document.getElementById("move-delay").value);

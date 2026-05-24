@@ -106,6 +106,7 @@
     "Библиотека": { forward: ["btnGo160", "btnGo213"], back: ["btnGo160", "btnGo744"] },
     "Маршрут 16": { forward: ["btnGo177", "btnGo206"], back: ["btnGo177", "btnGo176"] },
     "Маршрут №3": { forward: ["btnGo576", "btnGo575","btnGo574", "btnGo566", "btnGo567"], back: ["btnGo566", "btnGo574","btnGo575", "btnGo576", "btnGo577"] },
+    "Вулканическое плато": { forward: ["btnGo577", "btnGo576", "btnGo575","btnGo574", "btnGo566", "btnGo567"], back: ["btnGo566", "btnGo574","btnGo575", "btnGo576", "btnGo577", "btnGo581"] },
   };
   
   // ===== ЛОГГЕР =====

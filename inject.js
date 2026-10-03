@@ -1271,7 +1271,8 @@
     log(`🔥 Выполняем комбо (${sequence.length} действий)`, 'COMBO');
 
     try {
-      for (const step of sequence) {
+      for (let stepIndex = 0; stepIndex < sequence.length; stepIndex++) {
+        const step = sequence[stepIndex];
         if (step.type === "attack") {
           for (let r = 0; r < (step.count || 1); r++) {
             const pp = getPP(step.index);
@@ -1288,16 +1289,16 @@
             if (shouldHealByTrackedAttacksReserve(step.index, remainingPp)) {
               queueHealAfterFight(`🏥 Комбо: после атаки ${step.index + 1} осталось ${remainingPp} PP, после боя идём лечиться`);
             }
-            if (r < (step.count || 1) - 1) await waitFor(() => !isInFight() || getAttackElements().length > 0, 5000, 50);
+            if (r < (step.count || 1) - 1) await delay(comboDelay);
           }
-          await waitFor(() => !isInFight() || getAttackElements().length > 0, 5000, 50);
+          if (stepIndex < sequence.length - 1) await delay(comboDelay);
         } else if (step.type === "swap") {
           const swapped = await performSwap(step.id);
           if (!swapped) {
             log(`❌ Смена на ID ${step.id} не выполнена`, 'COMBO');
             return false;
           }
-          await waitFor(() => !isInFight() || getAttackElements().length > 0, 5000, 50);
+          if (stepIndex < sequence.length - 1) await delay(comboDelay);
         }
       }
 

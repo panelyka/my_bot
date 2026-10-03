@@ -11,115 +11,137 @@ console.log("🎮 Game Bot Content Script loaded");
 })();
 
 // ===== ПЕРЕХВАТ ДИАЛОГОВ (БЕЗ СДАЧИ) =====
+// Широкие селекторы ('.modal', '.popup', '[class*="dialog"]') попадали в обычную
+// разметку игры и приводили к авто-кликам по интерфейсу во время загрузки.
+const DIALOG_SELECTOR = '.dialog, .confirm, [role="dialog"], [role="alertdialog"]';
+const DIALOG_SCAN_INTERVAL_MS = 500;
+let dialogActionCooldownUntil = 0;
+
+// Пауза после собственного клика: иначе клик -> мутация -> клик зацикливается
+function markDialogAction() {
+  dialogActionCooldownUntil = Date.now() + 600;
+}
+
+// Обрабатывает один видимый диалог, возвращает true если был клик
+function handleDialog(el) {
+  // Ищем кнопку OK, Да, Подтвердить (НЕ СДАЧА)
+  const okButtons = el.querySelectorAll('.button.green, .button.yes, .btn-success, .ok, .confirm, .btn-primary');
+  for (const btn of okButtons) {
+    const text = (btn.textContent || "").toLowerCase();
+    // Пропускаем кнопку "Сдаться"
+    if (text.includes("сдаться")) continue;
+    if (text.includes("ok") || text.includes("да") || text.includes("подтвердить") || text.includes("yes")) {
+      console.log("✅ AUTO-CLICK OK:", btn.textContent);
+      btn.click();
+      markDialogAction();
+      return true;
+    }
+  }
+
+  // Ищем любую кнопку с текстом OK/Да (НЕ СДАЧА)
+  const allButtons = el.querySelectorAll('button, .button, .btn');
+  for (const btn of allButtons) {
+    const text = (btn.textContent || "").toLowerCase();
+    if (text.includes("сдаться")) continue;
+    if (text === "ok" || text === "да" || text === "yes" || text === "подтвердить") {
+      console.log("✅ AUTO-CLICK BUTTON:", btn.textContent);
+      btn.click();
+      markDialogAction();
+      return true;
+    }
+  }
+
+  // Ищем кнопку "Закрыть"
+  const closeButtons = el.querySelectorAll('.close, .cancel, .button.red, .btn-danger');
+  for (const btn of closeButtons) {
+    const text = (btn.textContent || "").toLowerCase();
+    if (text.includes("сдаться")) continue;
+    if (text.includes("закрыть") || text.includes("cancel") || text.includes("отмена")) {
+      console.log("❌ AUTO-CLOSE:", btn.textContent);
+      btn.click();
+      markDialogAction();
+      return true;
+    }
+  }
+
+  return false;
+}
+
 // Функция для автоматического закрытия диалогов (кроме сдачи)
 function autoCloseDialogs() {
-  // Ищем диалоги подтверждения
-  const dialogSelectors = [
-    '.dialog', '.confirm', '.modal', '.popup', 
-    '[class*="confirm"]', '[class*="dialog"]', '[class*="modal"]',
-    '[role="dialog"]', '[role="alertdialog"]'
-  ];
-  
-  dialogSelectors.forEach(selector => {
-    const elements = document.querySelectorAll(selector);
-    elements.forEach(el => {
-      if (el.offsetParent !== null) { // Видимый элемент
-        console.log("🔍 Найден диалог:", selector);
-        
-        // Ищем кнопку OK, Да, Подтвердить (НЕ СДАЧА)
-        const okButtons = el.querySelectorAll('.button.green, .button.yes, .btn-success, .ok, .confirm, .btn-primary');
-        for (const btn of okButtons) {
-          const text = (btn.textContent || "").toLowerCase();
-          // Пропускаем кнопку "Сдаться"
-          if (text.includes("сдаться")) continue;
-          if (text.includes("ok") || text.includes("да") || text.includes("подтвердить") || text.includes("yes")) {
-            console.log("✅ AUTO-CLICK OK:", btn.textContent);
-            btn.click();
-            return;
-          }
-        }
-        
-        // Ищем любую кнопку с текстом OK/Да (НЕ СДАЧА)
-        const allButtons = el.querySelectorAll('button, .button, .btn');
-        for (const btn of allButtons) {
-          const text = (btn.textContent || "").toLowerCase();
-          if (text.includes("сдаться")) continue;
-          if (text === "ok" || text === "да" || text === "yes" || text === "подтвердить") {
-            console.log("✅ AUTO-CLICK BUTTON:", btn.textContent);
-            btn.click();
-            return;
-          }
-        }
-        
-        // Ищем кнопку "Закрыть"
-        const closeButtons = el.querySelectorAll('.close, .cancel, .button.red, .btn-danger');
-        for (const btn of closeButtons) {
-          const text = (btn.textContent || "").toLowerCase();
-          if (text.includes("сдаться")) continue;
-          if (text.includes("закрыть") || text.includes("cancel") || text.includes("отмена")) {
-            console.log("❌ AUTO-CLOSE:", btn.textContent);
-            btn.click();
-            return;
-          }
-        }
-      }
-    });
-  });
+  if (Date.now() < dialogActionCooldownUntil) return;
+
+  for (const el of document.querySelectorAll(DIALOG_SELECTOR)) {
+    if (el.offsetParent === null) continue; // Только видимые
+    if (handleDialog(el)) return;
+  }
 }
 
 // ===== ЭМУЛЯЦИЯ НАЖАТИЯ ENTER (БЕЗ СДАЧИ) =====
 function autoPressEnter() {
-  const dialogs = document.querySelectorAll('.dialog, .confirm, .modal, [class*="confirm"], [class*="dialog"]');
-  dialogs.forEach(dialog => {
-    if (dialog.offsetParent !== null) {
-      // Проверяем, не диалог ли это сдачи
-      const hasSurrenderBtn = dialog.querySelector('.button.red.withtext');
-      if (hasSurrenderBtn && hasSurrenderBtn.textContent === "Сдаться") {
-        console.log("⏭️ Пропускаем диалог сдачи");
-        return;
-      }
-      
-      const enterEvent = new KeyboardEvent('keydown', {
-        key: 'Enter',
-        code: 'Enter',
-        keyCode: 13,
-        which: 13,
-        bubbles: true,
-        cancelable: true
-      });
-      dialog.dispatchEvent(enterEvent);
-      document.dispatchEvent(enterEvent);
-      console.log("⌨️ AUTO-ENTER на диалоге");
+  if (Date.now() < dialogActionCooldownUntil) return;
+
+  for (const dialog of document.querySelectorAll(DIALOG_SELECTOR)) {
+    if (dialog.offsetParent === null) continue;
+
+    // Проверяем, не диалог ли это сдачи
+    const hasSurrenderBtn = dialog.querySelector('.button.red.withtext');
+    if (hasSurrenderBtn && hasSurrenderBtn.textContent === "Сдаться") {
+      console.log("⏭️ Пропускаем диалог сдачи");
+      continue;
     }
-  });
+
+    const enterEvent = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      code: 'Enter',
+      keyCode: 13,
+      which: 13,
+      bubbles: true,
+      cancelable: true
+    });
+    dialog.dispatchEvent(enterEvent);
+    markDialogAction();
+    console.log("⌨️ AUTO-ENTER на диалоге");
+    return;
+  }
 }
 
-// ===== MUTATION OBSERVER =====
-const observer = new MutationObserver(() => {
+// ===== MUTATION OBSERVER (с троттлингом) =====
+let dialogScanScheduled = false;
+let lastDialogScanAt = 0;
+
+function runDialogAutomation() {
+  dialogScanScheduled = false;
+  if (document.hidden) return;
+  lastDialogScanAt = Date.now();
   autoCloseDialogs();
   autoPressEnter();
-});
+}
+
+// Без троттлинга наблюдатель запускал полный обход DOM на каждой мутации
+function scheduleDialogScan() {
+  if (dialogScanScheduled) return;
+  dialogScanScheduled = true;
+  setTimeout(runDialogAutomation, Math.max(0, DIALOG_SCAN_INTERVAL_MS - (Date.now() - lastDialogScanAt)));
+}
+
+const observer = new MutationObserver(scheduleDialogScan);
 
 function startDialogAutomation() {
   if (startDialogAutomation.started || !document.body) return;
   startDialogAutomation.started = true;
 
-  observer.observe(document.body, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-    attributeFilter: ['style', 'class', 'display']
-  });
+  observer.observe(document.body, { childList: true, subtree: true });
+  setInterval(scheduleDialogScan, 1000);
 }
 
-startDialogAutomation();
-if (!startDialogAutomation.started) {
-  document.addEventListener('DOMContentLoaded', startDialogAutomation, { once: true });
+// Стартуем только после полной загрузки: на document_start обработка тысяч
+// мутаций инициализации страницы вешала вкладку и сайт не прогружался
+if (document.readyState === 'complete') {
+  startDialogAutomation();
+} else {
+  window.addEventListener('load', startDialogAutomation, { once: true });
 }
-
-// Запускаем авто-закрытие каждые 200мс
-setInterval(autoCloseDialogs, 200);
-setInterval(autoPressEnter, 300);
 
 // ===== ПЕРЕХВАТ ОРИГИНАЛЬНЫХ ФУНКЦИЙ (БЕЗ СДАЧИ) =====
 const overrideScript = document.createElement('script');

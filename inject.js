@@ -53,6 +53,11 @@
   
   // COMBO VARIABLES
   let isExecutingCombo = false;
+
+  // FAINTED POKEMON REPLACEMENT
+  let isReplacingFaintedPokemon = false;
+  let nextFaintedReplaceAttemptAt = 0;
+  let faintedReplaceSkip = 0;
   
   // EXP SYSTEM
   let expConfig = createExpConfigSnapshot();
@@ -702,6 +707,7 @@
   function isInFight() {
     const enemyImg = document.querySelector("#divFightH img[src*='/mnst/']");
     if (!enemyImg) return false;
+    if (isPlayerPokemonFainted()) return true;
 
     const fightAction = document.querySelector("#divFightAction");
     if (fightAction?.textContent?.includes("Ваш ход")) return true;
@@ -718,6 +724,19 @@
 
     const fightActionText = document.querySelector("#divFightAction")?.textContent?.trim() || "";
     return fightActionText.includes("Ваш ход");
+  }
+
+  function isFightFinishedByText() {
+    const fightActionText = document.querySelector("#divFightAction")?.textContent || "";
+    return /вы победили|вы проиграли|ничья|бой окончен/i.test(fightActionText);
+  }
+
+  // Когда наш монстр погибает, игра ставит в #divFightI заглушку .pokemonBoxDummy вместо карточки.
+  function isPlayerPokemonFainted() {
+    if (!document.querySelector("#divFightI .pokemonBoxDummy")) return false;
+    if (document.querySelector("#divFightH .pokemonBoxDummy")) return false;
+    if (!document.querySelector("#divFightH img[src*='/mnst/']")) return false;
+    return !isFightFinishedByText();
   }
 
   function extractMonsterIdFromSrc(src) {
@@ -788,14 +807,24 @@
     return Boolean(weatherCode) && expConfig.forbiddenWeatherCodes.includes(weatherCode);
   }
 
+  // Категории атак в игре: 1 — физическая, 2 — специальная, 3 — статусная (урона не наносит).
+  function isStatusAttack(attackEl) {
+    return Boolean(attackEl?.querySelector(".divMoveTitle.category3"));
+  }
+
   function getAvailableAttackOptions() {
     return getAttackElements().map((element, index) => ({
       element,
       index,
       pp: getPP(index),
       name: getAttackName(element),
-      normalizedName: normalizeAttackName(getAttackName(element))
+      normalizedName: normalizeAttackName(getAttackName(element)),
+      isStatus: isStatusAttack(element)
     }));
+  }
+
+  function getDamagingAttackOptions() {
+    return getAvailableAttackOptions().filter(option => !option.isStatus);
   }
 
   function getAttackHealThresholdValue() {
@@ -823,7 +852,7 @@
   }
 
   function getLowestRemainingAttackPP() {
-    const attackOptions = getAvailableAttackOptions();
+    const attackOptions = getDamagingAttackOptions();
     if (!attackOptions.length) return null;
     return attackOptions.reduce((lowest, option) => Math.min(lowest, option.pp), attackOptions[0].pp);
   }
@@ -1386,6 +1415,78 @@
     await delay(300);
     return true;
   }
+
+  function isPokemonPickerItemAlive(item) {
+    if (/(^|\s)(disabled|dead|fainted|inactive)(\s|$)/i.test(item.className || "")) return false;
+    const hpBar = item.querySelector(".barHP div");
+    if (hpBar) {
+      const hp = parseFloat(hpBar.style.width);
+      if (!isNaN(hp) && hp <= 0) return false;
+    }
+    return true;
+  }
+
+  function getFaintedReplacementCandidates() {
+    const menu = document.querySelector(".divContext");
+    if (!menu || menu.style.display === "none") return [];
+
+    const items = [...menu.querySelectorAll(".pokemonBoxTiny")].map(box => box.closest(".divElement") || box);
+    return [...new Set(items)].filter(isPokemonPickerItemAlive);
+  }
+
+  function describePokemonPickerItem(item) {
+    const name = item.querySelector(".name")?.textContent?.trim();
+    const id = extractMonsterIdFromSrc(item.querySelector("img")?.src);
+    return name || (id ? `ID ${id}` : "монстр");
+  }
+
+  async function replaceFaintedPokemon() {
+    if (isReplacingFaintedPokemon || Date.now() < nextFaintedReplaceAttemptAt) return false;
+    isReplacingFaintedPokemon = true;
+    lastAttackTime = Date.now();
+
+    try {
+      queueHealAfterFight("🏥 Покемон погиб в бою, после боя идём лечиться");
+
+      let candidates = getFaintedReplacementCandidates();
+      if (!candidates.length) {
+        const dummy = document.querySelector("#divFightI .pokemonBoxDummy");
+        if (!dummy) return false;
+        log("💀 Покемон погиб, выбираем следующего живого", 'SWAP');
+        (dummy.querySelector(".ball.clickable") || dummy).click();
+        await waitFor(() => getFaintedReplacementCandidates().length > 0 || !isPlayerPokemonFainted(), 3000);
+        if (!isPlayerPokemonFainted()) return true;
+        candidates = getFaintedReplacementCandidates();
+      }
+
+      if (!candidates.length) {
+        nextFaintedReplaceAttemptAt = Date.now() + 3000;
+        log("❌ Живых покемонов для замены не найдено, повтор через 3 сек", 'SWAP');
+        return false;
+      }
+
+      // Если прошлая попытка не сработала, пробуем следующего по списку.
+      const target = candidates[faintedReplaceSkip % candidates.length];
+      const targetName = describePokemonPickerItem(target);
+      target.click();
+
+      const replaced = await waitFor(() => !isPlayerPokemonFainted(), 4000);
+      if (!replaced) {
+        faintedReplaceSkip++;
+        nextFaintedReplaceAttemptAt = Date.now() + 1500;
+        log(`⚠️ Не удалось выпустить ${targetName}, пробуем другого`, 'SWAP');
+        return false;
+      }
+
+      faintedReplaceSkip = 0;
+      log(`🔄 В бой выпущен ${targetName}, добиваем моба`, 'SWAP');
+      await delay(300);
+      return true;
+    } finally {
+      lastAttackTime = Date.now();
+      isReplacingFaintedPokemon = false;
+    }
+  }
   
   async function executeComboSequence(sequence) {
     if (!sequence?.length || isExecutingCombo) return false;
@@ -1501,7 +1602,7 @@
   }
   
   function attackDefault() {
-    const attackOptions = getAvailableAttackOptions();
+    const attackOptions = getDamagingAttackOptions();
     for (const option of attackOptions) {
       if (hasEnoughAttackPP(option.pp) && clickAttack(option.index)) {
         const remainingPp = Math.max(option.pp - 1, 0);
@@ -1524,10 +1625,11 @@
   }
 
   function attackFallback(reason = "") {
-    const attackOptions = getAvailableAttackOptions();
+    if (isPlayerPokemonFainted()) return false;
+    const attackOptions = getDamagingAttackOptions();
     const fallbackOption = attackOptions.find(option => option.pp > 0);
     if (!fallbackOption) {
-      queueHealAfterFight(reason || "🏥 Резервный сценарий: доступных атак не осталось, нужен хил");
+      queueHealAfterFight(reason || "🏥 Резервный сценарий: доступных атакующих (не статусных) атак не осталось, нужен хил");
       return false;
     }
 
@@ -1548,6 +1650,12 @@
   function attack() {
     if (!isInFight()) return;
     if (isExecutingCombo) return;
+    if (isReplacingFaintedPokemon) return;
+
+    if (isPlayerPokemonFainted()) {
+      void replaceFaintedPokemon();
+      return;
+    }
     
     const enemyId = getEnemyId();
     
@@ -2123,6 +2231,8 @@
       if (inFight) {
         suppressAutoHealUntilNextFight = false;
         healRetryBlockedUntil = 0;
+        nextFaintedReplaceAttemptAt = 0;
+        faintedReplaceSkip = 0;
         clearEncounterAction();
         resetCurrentEnemySnapshot();
         updateCurrentEnemySnapshot();

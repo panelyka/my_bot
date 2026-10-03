@@ -35,6 +35,12 @@
   let previousFightState = false;
   let lastSeenEnemyId = null;
   let lastSeenEnemyName = "";
+  let lastFightEnemy = { id: null, name: "" };
+  let attachedGameSocket = null;
+  const processedWildFightIds = new Set();
+  let fightObserver = null;
+  let observedFightNodes = [];
+  let scheduledMainLoop = null;
   let handledEncounterAction = "";
   let handledEncounterUntil = 0;
   let surrenderInProgress = false;
@@ -404,17 +410,27 @@
   }
 
   function shouldSurrenderForEnemy(enemyId) {
-    return parseEnemyIdList(surrenderEnemyIds).includes(String(enemyId || ""));
+    return enemyIdListIncludes(surrenderEnemyIds, enemyId);
   }
 
   function shouldPauseForEnemy(enemyId) {
-    return parseEnemyIdList(afkEnemyIds).includes(String(enemyId || ""));
+    return enemyIdListIncludes(afkEnemyIds, enemyId);
   }
 
-  function hasShinyRankMarker() {
-    return [...document.querySelectorAll("#divFightH .rank.txtgray2")].some(rank =>
-      [...rank.classList].some(className => className.startsWith("shine"))
-    );
+  function getEnemySpecialColoring() {
+    const enemyBox = document.querySelector("#divFightH");
+    if (!enemyBox) return "";
+
+    const imgSrc = enemyBox.querySelector("img[src*='/mnst/']")?.getAttribute("src") || "";
+    const coloringFolder = imgSrc.match(/\/mnst\/([^/]+)\//)?.[1] || "";
+    if (coloringFolder && coloringFolder !== "norm") return coloringFolder;
+
+    if (enemyBox.querySelector(".name[class*='shine']")) return "shine";
+
+    const rankShine = [...enemyBox.querySelectorAll(".rank.txtgray2")]
+      .flatMap(rank => [...rank.classList])
+      .find(className => className.startsWith("shine"));
+    return rankShine || "";
   }
 
   function pauseAuto(reason, type = 'WARN') {
@@ -603,9 +619,10 @@
     const enemyId = getEnemyId();
     const enemyName = getCurrentEnemy();
 
-    if (pauseOnShiny && hasShinyRankMarker()) {
+    const specialColoring = pauseOnShiny ? getEnemySpecialColoring() : "";
+    if (specialColoring) {
       holdEncounterAction('pause-shiny', 60000);
-      pauseAuto(`🌟 Найден особый окрас у ${enemyName || enemyId || 'неизвестного моба'}: бот остановлен`, 'WARN');
+      pauseAuto(`🌟 Найден особый окрас (${specialColoring}) у ${enemyName || enemyId || 'неизвестного моба'}: бот остановлен`, 'WARN');
       return true;
     }
 
@@ -717,6 +734,8 @@
     const nameEl = document.querySelector("#divFightH .name");
     const enemyName = nameEl?.textContent?.trim().toLowerCase() || "";
     if (enemyName) lastSeenEnemyName = enemyName;
+
+    if (enemyId) lastFightEnemy = { id: enemyId, name: enemyName || lastSeenEnemyName };
   }
 
   function resetCurrentEnemySnapshot() {
@@ -1070,6 +1089,9 @@
     const text = alerten.innerText;
     if (text === lastAlert) return;
     lastAlert = text;
+
+    // Если подключены к сокету игры, статистику считает handleWildFightResult — не дублируем
+    if (attachedGameSocket) return;
     
     const enemyName = getCurrentEnemy();
     const enemyId = getEnemyId();
@@ -1108,6 +1130,95 @@
     if (hasStatsChanges) saveData();
     
     updateUI();
+  }
+
+  // ===== СОБЫТИЯ ИГРЫ (socket.io) =====
+  function attachGameSocketListener() {
+    const socket = window.fc?.socket;
+    if (!socket || typeof socket.on !== "function" || socket === attachedGameSocket) return;
+
+    if (attachedGameSocket && typeof attachedGameSocket.off === "function") {
+      attachedGameSocket.off("event", handleGameSocketEvent);
+    }
+    socket.on("event", handleGameSocketEvent);
+    attachedGameSocket = socket;
+    log("🔌 Подключились к событиям игры (статистика боёв из сокета)", 'INFO');
+  }
+
+  function handleGameSocketEvent(name, payload) {
+    if (name !== "Exp.Eventer_wilds" || !auto) return;
+    try {
+      const results = Array.isArray(payload) ? payload : [payload];
+      results.forEach(handleWildFightResult);
+    } catch (e) {
+      log(`Ошибка обработки ${name}: ${e}`, 'ERROR');
+    }
+  }
+
+  // Формат: { f_id, reason, poke: { sp_id, shine, lvl, ... }, drop: [[?, ?, amount, ?, name], ...] }
+  function handleWildFightResult(result) {
+    if (!result || typeof result !== "object") return;
+    if (result.f_id != null) {
+      if (processedWildFightIds.has(result.f_id)) return;
+      processedWildFightIds.add(result.f_id);
+      if (processedWildFightIds.size > 100) processedWildFightIds.delete(processedWildFightIds.values().next().value);
+    }
+
+    const spId = result.poke?.sp_id;
+    const enemyId = spId != null ? String(spId).padStart(3, "0") : (lastFightEnemy.id || "");
+    const enemyName = normalizeEnemyId(lastFightEnemy.id) === normalizeEnemyId(enemyId) ? lastFightEnemy.name : "";
+    const dropTime = new Date().toLocaleTimeString();
+    const reason = String(result.reason || "").trim();
+
+    stats.fights++;
+    if (!reason) {
+      stats.kills++;
+      stats.enemies.unshift({ id: enemyId, name: enemyName, time: dropTime });
+      if (stats.enemies.length > 50) stats.enemies.pop();
+      log(`🏆 Победа над ${enemyName || 'мобом'} (ID: ${enemyId}, ур. ${result.poke?.lvl ?? '?'})`, 'FIGHT');
+    } else {
+      log(`Бой с ID ${enemyId} завершён: ${reason}`, 'FIGHT');
+    }
+
+    for (const drop of Array.isArray(result.drop) ? result.drop : []) {
+      if (!Array.isArray(drop)) continue;
+      const amount = parseInt(drop[2], 10) || 1;
+      const title = String(drop.find(part => typeof part === "string") || "Предмет").trim();
+
+      if (title.toLowerCase().includes("кредит")) {
+        stats.credits += amount;
+        addRecentDrop({ type: 'credits', name: 'Кредиты', amount, time: dropTime, enemyId, enemyName });
+        log(`💰 +${amount} кредитов (всего: ${stats.credits})`, 'INFO');
+      } else {
+        stats.items[title] = (stats.items[title] || 0) + amount;
+        addRecentDrop({ type: 'item', name: title, amount, time: dropTime, enemyId, enemyName });
+        log(`📦 +${title} x${amount}`, 'INFO');
+      }
+    }
+
+    saveData();
+    updateUI();
+  }
+
+  // ===== РЕАКЦИЯ НА ИЗМЕНЕНИЯ БОЯ (вместо ожидания следующего тика) =====
+  function scheduleMainLoop() {
+    if (scheduledMainLoop) return;
+    scheduledMainLoop = setTimeout(() => {
+      scheduledMainLoop = null;
+      mainLoop();
+    }, 50);
+  }
+
+  function ensureFightObserver() {
+    const nodes = ["#divFightAction", "#divFightH", "#divFightI"].map(selector => document.querySelector(selector));
+    if (nodes.every((node, i) => node === observedFightNodes[i])) return;
+
+    if (!fightObserver) fightObserver = new MutationObserver(scheduleMainLoop);
+    fightObserver.disconnect();
+    observedFightNodes = nodes;
+    nodes.forEach(node => {
+      if (node) fightObserver.observe(node, { childList: true, subtree: true, characterData: true });
+    });
   }
   
   // ===== ЛЕЧЕНИЕ =====
@@ -1994,6 +2105,8 @@
   
   // ===== ОСНОВНОЙ ЦИКЛ =====
   function mainLoop() {
+    attachGameSocketListener();
+    ensureFightObserver();
     checkCaptcha();
     getCurrentLocation();
     if (!auto) return;

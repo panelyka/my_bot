@@ -129,8 +129,6 @@
     window.__gameBotAllowSurrenderConfirmUntil = Number(window.__gameBotAllowSurrenderConfirmUntil || 0);
     window.__gameBotDebugSurrenderTrace = Boolean(window.__gameBotDebugSurrenderTrace);
 
-    const SURRENDER_CONFIRM_KEY = "{{fight_surrend_confirm}}";
-
     function shouldAutoApproveSurrender(atTime = Date.now()) {
       return Number(window.__gameBotAllowSurrenderConfirmUntil || 0) > atTime;
     }
@@ -193,38 +191,8 @@
       window.confirm = wrappedConfirm;
     }
 
-    function wrapSurrenderConfirmShortcut() {
-      const originalSc = window.sc;
-      if (typeof originalSc !== "function" || originalSc.__gameBotWrapped) return false;
-
-      const wrappedSc = function(a) {
-        if (a === SURRENDER_CONFIRM_KEY && shouldAutoApproveSurrender()) {
-          window.__gameBotAllowSurrenderConfirmUntil = 0;
-          if (window.__gameBotDebugSurrenderTrace) {
-            console.group("🔎 GAMEBOT INJECT SC BYPASS");
-            console.log("argument:", a);
-            console.log("stack:", new Error("GameBot inject sc bypass trace").stack);
-            console.groupEnd();
-          }
-          return true;
-        }
-
-        return originalSc.apply(this, arguments);
-      };
-
-      wrappedSc.__gameBotWrapped = true;
-      wrappedSc.__gameBotOriginal = originalSc;
-      window.sc = wrappedSc;
-      return true;
-    }
-
-    if (!wrapSurrenderConfirmShortcut()) {
-      const scHookInterval = window.setInterval(() => {
-        if (wrapSurrenderConfirmShortcut()) {
-          window.clearInterval(scHookInterval);
-        }
-      }, 250);
-    }
+    // window.sc не оборачиваем: на league17 это класс Prototype.js (new sc(...)),
+    // обёртка ломает this.initialize и валит AJAX-ответы
 
     document.addEventListener('click', (event) => {
       if (!window.__gameBotDebugSurrenderTrace) return;

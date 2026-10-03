@@ -29,7 +29,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["inject.js", "sounds/heal.mp3"],
+      "resources": ["inject.js", "overrides.js", "sounds/heal.mp3"],
       "matches": [
         "https://game.league17.ru/*",
         "https://eu.league17.ru/*",

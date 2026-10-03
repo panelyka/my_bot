@@ -2,12 +2,16 @@
 
 console.log("🎮 Game Bot Content Script loaded");
 
-// ===== INJECT MAIN SCRIPT =====
+// ===== INJECT PAGE SCRIPTS =====
+// async = false сохраняет порядок выполнения для динамически добавленных скриптов
 (function() {
-  const script = document.createElement('script');
-  script.src = chrome.runtime.getURL('inject.js');
-  script.onload = () => script.remove();
-  (document.head || document.documentElement).appendChild(script);
+  ['inject.js', 'overrides.js'].forEach(file => {
+    const script = document.createElement('script');
+    script.src = chrome.runtime.getURL(file);
+    script.async = false;
+    script.onload = () => script.remove();
+    (document.head || document.documentElement).appendChild(script);
+  });
 })();
 
 // ===== ПЕРЕХВАТ ДИАЛОГОВ (БЕЗ СДАЧИ) =====
@@ -142,66 +146,6 @@ if (document.readyState === 'complete') {
 } else {
   window.addEventListener('load', startDialogAutomation, { once: true });
 }
-
-// ===== ПЕРЕХВАТ ОРИГИНАЛЬНЫХ ФУНКЦИЙ (БЕЗ СДАЧИ) =====
-const overrideScript = document.createElement('script');
-overrideScript.textContent = `
-  (function() {
-    window.__gameBotAllowSurrenderConfirmUntil = 0;
-    window.__gameBotDebugSurrenderConfirm = false;
-    window.__gameBotDebugSurrenderClick = false;
-
-    // Переопределяем confirm (ручную сдачу не блокируем)
-    const originalConfirm = window.confirm;
-    window.confirm = function(message) {
-      const isSurrenderConfirm = typeof message === 'string' && message.toLowerCase().includes("сдаться");
-      if (isSurrenderConfirm) {
-        if (window.__gameBotDebugSurrenderConfirm) {
-          const stack = new Error("GameBot surrender confirm trace").stack;
-          console.group("🔎 GAMEBOT SURRENDER CONFIRM TRACE");
-          console.log("message:", message);
-          console.log("allowUntil:", window.__gameBotAllowSurrenderConfirmUntil || 0);
-          console.log("stack:", stack);
-          console.groupEnd();
-          debugger;
-        }
-
-        const allowSurrender = Number(window.__gameBotAllowSurrenderConfirmUntil || 0) > Date.now();
-        if (allowSurrender) {
-          window.__gameBotAllowSurrenderConfirmUntil = 0;
-          console.log("✅ AUTO-ALLOW surrender confirm");
-          return true;
-        }
-
-        return originalConfirm.apply(this, arguments);
-      }
-
-      console.log("✅ AUTO-CONFIRM:", message);
-      return true;
-    };
-    
-    // Переопределяем alert
-    const originalAlert = window.alert;
-    window.alert = function(message) {
-      console.log("📢 AUTO-ALERT:", message);
-      return true;
-    };
-    
-    // Переопределяем prompt
-    const originalPrompt = window.prompt;
-    window.prompt = function(message, defaultValue) {
-      console.log("💬 AUTO-PROMPT:", message);
-      return defaultValue || "";
-    };
-    
-    // Отключаем onbeforeunload
-    window.onbeforeunload = null;
-    
-    console.log("🔧 Page functions overridden (manual surrender preserved)");
-  })();
-`;
-(document.head || document.documentElement).appendChild(overrideScript);
-overrideScript.onload = () => overrideScript.remove();
 
 // ===== MESSAGE BRIDGE =====
 const bridgePendingRequests = new Map();

@@ -392,6 +392,17 @@
       .filter(Boolean);
   }
 
+  function normalizeEnemyId(value) {
+    const id = String(value ?? "").trim();
+    return /^\d+$/.test(id) ? String(parseInt(id, 10)) : id;
+  }
+
+  function enemyIdListIncludes(listValue, enemyId) {
+    const target = normalizeEnemyId(enemyId);
+    if (!target) return false;
+    return parseEnemyIdList(listValue).some(id => normalizeEnemyId(id) === target);
+  }
+
   function shouldSurrenderForEnemy(enemyId) {
     return parseEnemyIdList(surrenderEnemyIds).includes(String(enemyId || ""));
   }
@@ -1311,7 +1322,7 @@
   
   function getComboForEnemy(enemyId) {
     if (!combos?.length) return null;
-    return combos.find(c => c.enemy === String(enemyId))?.sequence || null;
+    return combos.find(c => c.sequence?.length && enemyIdListIncludes(c.enemy, enemyId))?.sequence || null;
   }
   
   // ===== ПРАВИЛА АТАК =====
@@ -1542,7 +1553,7 @@
           <b style="color:#f39c12;">КОМБО ${i+1}</b>
           <button class="gb-del-combo" data-index="${i}" style="background:#e74c3c; border:none; border-radius:3px; color:#fff; cursor:pointer; padding:2px 6px;">🗑️</button>
         </div>
-        <input id="combo_enemy_${i}" placeholder="ID врага" value="${combo.enemy}" style="width:100%; padding:5px; margin-bottom:8px; background:#111; border:1px solid #f39c12; color:#f39c12; border-radius:4px;">
+        <input id="combo_enemy_${i}" placeholder="ID врагов через запятую: 356, 068, 110" value="${combo.enemy}" style="width:100%; padding:5px; margin-bottom:8px; background:#111; border:1px solid #f39c12; color:#f39c12; border-radius:4px;">
         <div style="color:#888; font-size:10px;">ПОСЛЕДОВАТЕЛЬНОСТЬ (задержка ${comboDelay}мс):</div>
         <div class="combo-actions-${i}" style="margin-bottom:5px;"></div>
         <button class="gb-add-action" data-index="${i}" style="width:100%; padding:4px; background:#4fa3f5; border:none; border-radius:4px; color:#fff; cursor:pointer;">+ ДОБАВИТЬ</button>

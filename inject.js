@@ -86,6 +86,20 @@
   // Индексы атак, по которым отслеживается PP для запуска автохила (0-3)
   // Хил запустится только когда ВСЕ отмеченные атаки имеют PP <= порога
   let ppHealTrackedAttacks = [0, 1, 2, 3];
+
+  // ===== АВТОРЕКЛАМА (чат "Торговля") =====
+  const AUTO_AD_TAB_TITLE = "Торговля";
+  const AUTO_AD_MAX_LENGTH = 500;
+  const AUTO_AD_MIN_INTERVAL_MIN = 1;
+  const AUTO_AD_RETRY_MS = 30000;
+  const AUTO_AD_COOLDOWN_TEXT = "Следующее объявление";
+  let autoAdEnabled = false;
+  let autoAdText = "";
+  let autoAdIntervalMin = 10;
+  let lastAutoAdAt = 0;
+  let nextAutoAdAt = 0;
+  let autoAdInProgress = false;
+  let autoAdLastStatus = "";
   
   // ===== ВСТРОЕННЫЕ ПУТИ ЛЕЧЕНИЯ =====
   const HEAL_TEMPLATES = {
@@ -682,6 +696,10 @@
         moveDelay = parsed.moveDelay ?? 2000;
         comboDelay = parsed.comboDelay ?? 1000;
         expConfig = createExpConfigSnapshot(parsed.expConfig || {});
+        autoAdEnabled = Boolean(parsed.autoAdEnabled);
+        autoAdText = typeof parsed.autoAdText === "string" ? parsed.autoAdText.slice(0, AUTO_AD_MAX_LENGTH) : "";
+        autoAdIntervalMin = Math.max(AUTO_AD_MIN_INTERVAL_MIN, Number(parsed.autoAdIntervalMin) || 10);
+        lastAutoAdAt = Number(parsed.lastAutoAdAt) || 0;
         stats = createStatsSnapshot(parsed.stats || DEFAULT_STATS);
       }
     } catch(e) { log(`Ошибка загрузки: ${e}`, 'ERROR'); }
@@ -694,7 +712,8 @@
       healPath, healPathBack, surrenderEnemyIds, afkEnemyIds, pauseOnShiny, hpThreshold, attackHealThreshold,
       ppHealTrackedAttacks,
       attackDelayMin, attackDelayMax, moveDelay, comboDelay,
-      expConfig, stats
+      expConfig, stats,
+      autoAdEnabled, autoAdText, autoAdIntervalMin, lastAutoAdAt
     };
     localStorage.setItem('gamebot_data', JSON.stringify(data));
     return syncStatsToExtension();
@@ -1928,6 +1947,256 @@
     };
   }
   
+  // ===== АВТОРЕКЛАМА =====
+  function findChatTabByTitle(title) {
+    return [...document.querySelectorAll(".divChatTab")]
+      .find(tab => tab.querySelector(".divChatTabTitle")?.textContent.trim() === title) || null;
+  }
+
+  function getChatInput() {
+    return document.querySelector("#divInputFields textarea.txtInput");
+  }
+
+  function getChatSendButton() {
+    return [...document.querySelectorAll("#divInputButtons .btnSend")]
+      .find(btn => !btn.classList.contains("loading") && isVisibleElement(btn)) || null;
+  }
+
+  function isChatSending() {
+    return isVisibleElement(document.querySelector("#divInputButtons .btnSend.loading"));
+  }
+
+  function getAdCooldownNodes() {
+    return [...document.querySelectorAll(".info")]
+      .filter(el => (el.textContent || "").includes(AUTO_AD_COOLDOWN_TEXT));
+  }
+
+  // Игра пишет "Следующее объявление вы сможете отправить через [время]" — формат времени
+  // заранее неизвестен, поэтому понимаем и "04:59", и "4 мин. 59 сек."
+  function parseAdCooldownMs(text) {
+    const tail = String(text || "").split("через").pop();
+    const clock = tail.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+    if (clock) {
+      const parts = clock.slice(1).filter(Boolean).map(Number);
+      const seconds = parts.length === 3
+        ? parts[0] * 3600 + parts[1] * 60 + parts[2]
+        : parts[0] * 60 + parts[1];
+      return seconds * 1000;
+    }
+    let seconds = 0;
+    const unitRe = /(\d+)\s*(ч|м|с)/gi;
+    let match;
+    while ((match = unitRe.exec(tail))) {
+      const value = Number(match[1]);
+      const unit = match[2].toLowerCase();
+      seconds += unit === "ч" ? value * 3600 : unit === "м" ? value * 60 : value;
+    }
+    return seconds * 1000;
+  }
+
+  function getAutoAdIntervalMs() {
+    return Math.max(AUTO_AD_MIN_INTERVAL_MIN, Number(autoAdIntervalMin) || 0) * 60000;
+  }
+
+  function recalcNextAutoAdAt() {
+    nextAutoAdAt = lastAutoAdAt ? lastAutoAdAt + getAutoAdIntervalMs() : Date.now();
+  }
+
+  function formatAdDuration(ms) {
+    const total = Math.max(0, Math.ceil(ms / 1000));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    const pad = (n) => String(n).padStart(2, "0");
+    return h ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+  }
+
+  function setAutoAdStatus(message, type = 'INFO') {
+    autoAdLastStatus = message;
+    log(`📢 ${message}`, type);
+    updateAutoAdUI();
+  }
+
+  function postponeAutoAd(ms, message) {
+    nextAutoAdAt = Date.now() + ms;
+    setAutoAdStatus(message, 'WARN');
+  }
+
+  async function waitForAdResult(input, knownCooldownNodes, timeoutMs = 4000) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      await delay(200);
+      const cooldownNode = getAdCooldownNodes().find(node => !knownCooldownNodes.has(node));
+      if (cooldownNode) {
+        return { sent: false, cooldownMs: parseAdCooldownMs(cooldownNode.textContent) || 60000 };
+      }
+      if (!input.value.trim() && !isChatSending()) return { sent: true };
+    }
+    return { sent: !input.value.trim() };
+  }
+
+  async function sendAutoAd() {
+    if (autoAdInProgress) return false;
+    const text = autoAdText.trim();
+    if (!text) {
+      setAutoAdStatus("Введите текст рекламы", 'WARN');
+      return false;
+    }
+
+    const tradeTab = findChatTabByTitle(AUTO_AD_TAB_TITLE);
+    const input = getChatInput();
+    if (!tradeTab || !input) {
+      postponeAutoAd(AUTO_AD_RETRY_MS, `Вкладка «${AUTO_AD_TAB_TITLE}» не найдена, повтор позже`);
+      return false;
+    }
+
+    // Не затираем то, что игрок сам набирает в чате
+    const draft = input.value.trim();
+    if ((draft && draft !== text) || isChatSending()) {
+      postponeAutoAd(AUTO_AD_RETRY_MS, "Поле чата занято, повтор позже");
+      return false;
+    }
+
+    autoAdInProgress = true;
+    updateAutoAdUI();
+    const previousTab = document.querySelector(".divChatTab.selected");
+    try {
+      if (!tradeTab.classList.contains("selected")) {
+        tradeTab.click();
+        await delay(400);
+      }
+      if (!tradeTab.classList.contains("selected")) {
+        postponeAutoAd(AUTO_AD_RETRY_MS, `Не удалось открыть вкладку «${AUTO_AD_TAB_TITLE}»`);
+        return false;
+      }
+
+      const sendBtn = getChatSendButton();
+      if (!sendBtn) {
+        postponeAutoAd(AUTO_AD_RETRY_MS, "Кнопка отправки не найдена");
+        return false;
+      }
+
+      const knownCooldownNodes = new Set(getAdCooldownNodes());
+      input.value = text.slice(0, AUTO_AD_MAX_LENGTH);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      sendBtn.click();
+
+      const result = await waitForAdResult(input, knownCooldownNodes);
+      if (result.sent) {
+        lastAutoAdAt = Date.now();
+        recalcNextAutoAdAt();
+        saveData();
+        setAutoAdStatus(`Реклама отправлена в ${new Date(lastAutoAdAt).toLocaleTimeString()}`);
+        return true;
+      }
+
+      if (input.value.trim() === text) input.value = "";
+      if (result.cooldownMs) {
+        postponeAutoAd(result.cooldownMs + 3000, `Кулдаун игры, повтор через ${formatAdDuration(result.cooldownMs + 3000)}`);
+      } else {
+        postponeAutoAd(AUTO_AD_RETRY_MS, "Сообщение не отправилось, повтор позже");
+      }
+      return false;
+    } catch (e) {
+      postponeAutoAd(AUTO_AD_RETRY_MS, `Ошибка авторекламы: ${e}`);
+      return false;
+    } finally {
+      if (previousTab && previousTab !== tradeTab && previousTab.isConnected) {
+        await delay(300);
+        previousTab.click();
+      }
+      autoAdInProgress = false;
+      updateAutoAdUI();
+    }
+  }
+
+  function autoAdTick() {
+    if (autoAdEnabled && !autoAdInProgress && !captchaPaused && autoAdText.trim()) {
+      if (!nextAutoAdAt) recalcNextAutoAdAt();
+      if (Date.now() >= nextAutoAdAt) sendAutoAd();
+    }
+    updateAutoAdUI();
+  }
+
+  function updateAutoAdUI() {
+    const toggle = document.getElementById("gb-ad-toggle");
+    const status = document.getElementById("gb-ad-status");
+    const counter = document.getElementById("gb-ad-count");
+    if (toggle) {
+      toggle.textContent = autoAdEnabled ? "📢 ON" : "📢 OFF";
+      toggle.style.background = autoAdEnabled ? "#1abc9c" : "#555";
+    }
+    if (counter) counter.textContent = `${autoAdText.length}/${AUTO_AD_MAX_LENGTH}`;
+    if (!status) return;
+
+    let line;
+    if (autoAdInProgress) line = "⏳ Отправка...";
+    else if (!autoAdEnabled) line = "Выключено";
+    else if (!autoAdText.trim()) line = "Введите текст рекламы";
+    else if (captchaPaused) line = "Пауза: капча";
+    else line = `Следующая отправка через ${formatAdDuration((nextAutoAdAt || Date.now()) - Date.now())}`;
+    status.textContent = autoAdLastStatus ? `${line} · ${autoAdLastStatus}` : line;
+  }
+
+  function ensureAutoAdUI() {
+    const content = document.getElementById("gb-content");
+    if (!content || document.getElementById("gb-ad-panel")) return;
+    const div = document.createElement("div");
+    div.id = "gb-ad-panel";
+    div.style = "margin-bottom:10px; padding:6px; background:rgba(0,0,0,0.3); border:1px solid #1abc9c; border-radius:5px;";
+    div.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
+        <label style="color:#1abc9c;">📢 АВТОРЕКЛАМА («${AUTO_AD_TAB_TITLE}»)</label>
+        <button id="gb-ad-toggle" style="padding:3px 8px; border:none; border-radius:4px; color:#fff; cursor:pointer;">📢 OFF</button>
+      </div>
+      <textarea id="gb-ad-text" maxlength="${AUTO_AD_MAX_LENGTH}" rows="3" placeholder="Текст объявления..." style="width:100%; box-sizing:border-box; padding:4px; background:#111; border:1px solid #1abc9c; color:#1abc9c; border-radius:4px; resize:vertical; font-family:monospace; font-size:12px;"></textarea>
+      <div style="display:flex; gap:6px; align-items:center; margin-top:5px;">
+        <span style="color:#888;">⏱️ каждые</span>
+        <input id="gb-ad-interval" type="number" min="${AUTO_AD_MIN_INTERVAL_MIN}" style="width:55px; padding:3px; background:#111; border:1px solid #1abc9c; color:#1abc9c; border-radius:4px;">
+        <span style="color:#888;">мин</span>
+        <span id="gb-ad-count" style="color:#666; margin-left:auto;">0/${AUTO_AD_MAX_LENGTH}</span>
+        <button id="gb-ad-send-now" style="padding:3px 8px; background:#4fa3f5; border:none; border-radius:4px; color:#fff; cursor:pointer;">📤 Сейчас</button>
+      </div>
+      <small id="gb-ad-status" style="display:block; margin-top:4px; color:#888;"></small>
+    `;
+    content.insertBefore(div, document.getElementById("gb-simple-panel"));
+
+    const textInput = div.querySelector("#gb-ad-text");
+    const intervalInput = div.querySelector("#gb-ad-interval");
+    textInput.value = autoAdText;
+    intervalInput.value = autoAdIntervalMin;
+
+    // Не отдаём нажатия клавиш хоткеям игры, пока печатаем рекламу
+    textInput.addEventListener("keydown", (e) => e.stopPropagation());
+    intervalInput.addEventListener("keydown", (e) => e.stopPropagation());
+
+    let saveTimer = null;
+    textInput.addEventListener("input", () => {
+      autoAdText = textInput.value.slice(0, AUTO_AD_MAX_LENGTH);
+      updateAutoAdUI();
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(saveData, 500);
+    });
+    intervalInput.addEventListener("change", () => {
+      autoAdIntervalMin = Math.max(AUTO_AD_MIN_INTERVAL_MIN, parseInt(intervalInput.value, 10) || AUTO_AD_MIN_INTERVAL_MIN);
+      intervalInput.value = autoAdIntervalMin;
+      recalcNextAutoAdAt();
+      saveData();
+      updateAutoAdUI();
+    });
+    div.querySelector("#gb-ad-toggle").onclick = () => {
+      autoAdEnabled = !autoAdEnabled;
+      autoAdLastStatus = "";
+      recalcNextAutoAdAt();
+      saveData();
+      log(autoAdEnabled ? "📢 Автореклама ВКЛЮЧЕНА" : "📢 Автореклама ВЫКЛЮЧЕНА");
+      updateAutoAdUI();
+    };
+    div.querySelector("#gb-ad-send-now").onclick = () => { sendAutoAd(); };
+
+    updateAutoAdUI();
+  }
+  
   function createSettingsPopup() {
     if (document.getElementById("gb-settings-popup")) return;
     const popup = document.createElement("div");
@@ -2166,6 +2435,7 @@
     renderSimpleRules();
     renderComboList();
     ensureExpUI();
+    ensureAutoAdUI();
     
     if (useComboMode) {
       simplePanel.style.display = "none";
@@ -2316,13 +2586,14 @@
   // ===== ИНИЦИАЛИЗАЦИЯ =====
   function init() {
     console.log("%c🤖 GameBot v22.0 - Инициализация...", "color: #4fa3f5; font-size: 14px;");
-    console.log("%c✨ Функции: правила атак, комбо, автокач, лечение", "color: #2ecc71; font-size: 12px");
+    console.log("%c✨ Функции: правила атак, комбо, автокач, лечение, автореклама", "color: #2ecc71; font-size: 12px");
     installSurrenderDebugHooks();
     loadData();
     resetSessionStats('init');
     if (auto) ensureWildMonstersEnabled();
     setInterval(createUI, 2000);
     setInterval(mainLoop, 500);
+    setInterval(autoAdTick, 1000);
     console.log("%c✅ Бот готов!", "color: #2ecc71; font-size: 12px");
   }
   

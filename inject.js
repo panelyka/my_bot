@@ -130,6 +130,7 @@
     "Дорога №4": { forward: ["btnGo52", "btnGo53"], back: ["btnGo52", "btnGo19"] },
     "Библиотека": { forward: ["btnGo160", "btnGo213"], back: ["btnGo160", "btnGo744"] },
     "Маршрут 16": { forward: ["btnGo177", "btnGo206"], back: ["btnGo177", "btnGo176"] },
+    "Горный тоннель": { forward: ["btnGo184", "btnGo164", "btnGo209"], back: ["btnGo164", "btnGo184", "btnGo183"] },
     "Маршрут №3": { forward: ["btnGo576", "btnGo575","btnGo574", "btnGo566", "btnGo567"], back: ["btnGo566", "btnGo574","btnGo575", "btnGo576", "btnGo577"] },
     "Вулканическое плато": { forward: ["btnGo577", "btnGo576", "btnGo575","btnGo574", "btnGo566", "btnGo567"], back: ["btnGo566", "btnGo574","btnGo575", "btnGo576", "btnGo577", "btnGo581"] },
   };

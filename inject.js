@@ -22,6 +22,86 @@
   let combos = [];
   let useComboMode = false;
   let auto = true;
+  let autoInventoryEnabled = false;
+  const INVENTORY_ITEMS = { '147': 'Рыболовная сеть', '145': 'Старая удочка', '146': 'Спиннинг', '235': 'Свисток', '183': 'Приманка' };
+  let inventoryItemId = '147';
+  let lastInventoryUseAt = 0;
+  let inventoryBusy = false;
+  let inventoryRetryAt = 0;
+
+  function inventoryStatus() {
+    if (!autoInventoryEnabled) return 'Выключена';
+    if (!auto) return 'Ожидание включения бота (ON)';
+    if (captchaPaused) return 'Пауза: капча';
+    if (isInFight()) return 'Ожидание завершения боя';
+    if (healing || healingInProgress) return 'Ожидание завершения лечения';
+    if (inventoryBusy) return 'Использование сети…';
+    const remaining = Math.max(lastInventoryUseAt + 3600000, inventoryRetryAt) - Date.now();
+    return remaining > 0 ? `Следующая попытка через ${Math.ceil(remaining / 60000)} мин.` : 'Готова к использованию';
+  }
+
+  function inventoryCanRun() {
+    return autoInventoryEnabled && auto && !captchaPaused && !isInFight()
+      && !healing && !healingInProgress;
+  }
+
+  async function waitInventoryElement(selector, predicate = () => true) {
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && inventoryCanRun()) {
+      const element = [...document.querySelectorAll(selector)].find(element => isVisibleElement(element) && predicate(element));
+      if (element) return element;
+      await delay(200);
+    }
+    return null;
+  }
+
+  async function autoInventoryTick() {
+    const status = document.getElementById('auto-inventory-status');
+    if (status) status.textContent = inventoryStatus();
+    const resetButton = document.getElementById('reset-inventory-timer');
+    if (resetButton) resetButton.disabled = inventoryBusy;
+    const itemSelect = document.getElementById('inventory-item');
+    if (itemSelect) itemSelect.disabled = inventoryBusy;
+    if (inventoryBusy || !inventoryCanRun() || Date.now() < inventoryRetryAt
+        || Date.now() - lastInventoryUseAt < 3600000) return;
+    inventoryBusy = true;
+    if (resetButton) resetButton.disabled = true;
+    if (itemSelect) itemSelect.disabled = true;
+    const selectedItemId = inventoryItemId;
+    try {
+      const icon = await waitInventoryElement('img.icon[src="/img/pub/interface/dock/items.png"]');
+      if (!icon) throw new Error('Не найдена кнопка инвентаря');
+      if (!inventoryCanRun()) return;
+      icon.click();
+      const category = await waitInventoryElement('.invcategory.cat6');
+      if (!category || !inventoryCanRun()) throw new Error('Не найдена вкладка «Прочее»');
+      category.click();
+      const image = await waitInventoryElement(`.item.clickable img[src="/img/pub/items/tiny/${selectedItemId}.png"]`);
+      const item = image?.closest('.item.clickable');
+      if (!item || !inventoryCanRun()) throw new Error(`${INVENTORY_ITEMS[selectedItemId]}: предмет не найден или использование приостановлено`);
+      if (item.matches('.disabled, .loading, [aria-disabled="true"]')) return;
+      const existingUseButtons = new Set([...document.querySelectorAll('.button.withtext')]
+        .filter(element => isVisibleElement(element) && element.textContent.trim() === 'Использовать'));
+      item.click();
+      const useButton = await waitInventoryElement('.button.withtext', element =>
+        element.textContent.trim() === 'Использовать'
+        && !existingUseButtons.has(element)
+        && !element.matches('.disabled, .loading, [disabled], [aria-disabled="true"]'));
+      if (!useButton || !inventoryCanRun()) throw new Error('Кнопка «Использовать» не найдена или использование приостановлено');
+      useButton.click();
+      lastInventoryUseAt = Date.now();
+      saveData();
+      log(`Инвентарь: нажата кнопка «Использовать» — ${INVENTORY_ITEMS[selectedItemId]}; следующая попытка через час`);
+    } catch (error) {
+      log(`Инвентарь: ${error.message}`, 'WARN');
+    } finally {
+      inventoryRetryAt = Date.now() + 60000;
+      inventoryBusy = false;
+      if (resetButton) resetButton.disabled = false;
+      if (itemSelect) itemSelect.disabled = false;
+      if (status) status.textContent = inventoryStatus();
+    }
+  }
   let healPath = "";
   let healPathBack = "";
   let surrenderEnemyIds = "";
@@ -684,6 +764,9 @@
         combos = parsed.combos || [];
         useComboMode = parsed.useComboMode || false;
         auto = parsed.auto ?? true;
+        autoInventoryEnabled = parsed.autoInventoryEnabled === true;
+        inventoryItemId = Object.hasOwn(INVENTORY_ITEMS, parsed.inventoryItemId) ? String(parsed.inventoryItemId) : '147';
+        lastInventoryUseAt = Math.max(0, Number(parsed.lastInventoryUseAt) || 0);
         healPath = parsed.healPath || "";
         healPathBack = parsed.healPathBack || "";
         surrenderEnemyIds = parsed.surrenderEnemyIds || "";
@@ -710,6 +793,7 @@
     stats = createStatsSnapshot(stats);
     const data = {
       simpleRules, combos, useComboMode, auto,
+      autoInventoryEnabled, inventoryItemId, lastInventoryUseAt,
       healPath, healPathBack, surrenderEnemyIds, afkEnemyIds, pauseOnShiny, hpThreshold, attackHealThreshold,
       ppHealTrackedAttacks,
       attackDelayMin, attackDelayMax, moveDelay, comboDelay,
@@ -2205,6 +2289,7 @@
     popup.style = `
       position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
       width:400px; background:#1a1a2e; border:2px solid #4fa3f5; border-radius:12px;
+      height:70vh; box-sizing:border-box; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain;
       z-index:1000000; color:#fff; font-family:monospace; font-size:12px;
       box-shadow:0 0 30px rgba(0,0,0,0.8); display:none;
     `;
@@ -2266,13 +2351,44 @@
           <label style="color:#888;">🔥 ЗАДЕРЖКА КОМБО (мс):</label>
           <input id="combo-delay" value="${comboDelay}" style="width:100%; padding:4px; background:#111; border:1px solid #f39c12; color:#f39c12; border-radius:3px;">
         </div>
+        <label style="display:block; margin-bottom:8px;"><input type="checkbox" id="auto-inventory"> Использовать предмет каждый час</label>
+        <select id="inventory-item" aria-label="Предмет для автоматического использования" style="width:100%; margin-bottom:8px; padding:6px; background:#111; color:#fff;">
+          ${Object.entries(INVENTORY_ITEMS).map(([id, name]) => `<option value="${id}">${name}</option>`).join('')}
+        </select>
+        <div id="auto-inventory-status" style="margin-bottom:12px;"></div>
+        <button type="button" id="reset-inventory-timer" style="width:100%; padding:6px; margin-bottom:12px; background:#555; border:none; border-radius:5px; color:#fff; cursor:pointer;">Сбросить общий таймер предметов</button>
         <button id="save-settings" style="width:100%; padding:8px; background:#4fa3f5; border:none; border-radius:5px; color:#fff; cursor:pointer;">💾 СОХРАНИТЬ</button>
       </div>
     `;
     document.body.appendChild(popup);
+    document.getElementById('inventory-item').value = inventoryItemId;
+    document.getElementById('inventory-item').onchange = event => {
+      if (inventoryBusy || !Object.hasOwn(INVENTORY_ITEMS, event.target.value)) {
+        event.target.value = inventoryItemId;
+        return;
+      }
+      inventoryItemId = event.target.value;
+      saveData();
+      autoInventoryTick();
+    };
+    document.getElementById('reset-inventory-timer').onclick = () => {
+      if (inventoryBusy) return;
+      lastInventoryUseAt = 0;
+      inventoryRetryAt = 0;
+      saveData();
+      log('Инвентарь: общий таймер предметов сброшен');
+      autoInventoryTick();
+    };
+    document.getElementById('auto-inventory').onchange = event => {
+      autoInventoryEnabled = event.target.checked;
+      inventoryRetryAt = 0;
+      saveData();
+      autoInventoryTick();
+    };
     
     document.getElementById("close-settings").onclick = () => popup.style.display = "none";
     document.getElementById("save-settings").onclick = () => {
+      autoInventoryEnabled = document.getElementById('auto-inventory').checked;
       healPath = document.getElementById("heal-path-input").value;
       healPathBack = document.getElementById("heal-back-input").value;
       surrenderEnemyIds = document.getElementById("surrender-enemies-input").value;
@@ -2306,7 +2422,7 @@
     c.id = "gb-main";
     c.style = `
       position:fixed; right:20px; bottom:20px; z-index:999999;
-      width:380px; max-height:85vh; overflow-y:auto;
+      width:380px; height:70vh; box-sizing:border-box; overflow-y:auto;
       background:linear-gradient(135deg,#1a1a2e,#16213e);
       border:2px solid #4fa3f5; border-radius:10px;
       font-family:monospace; font-size:12px;
@@ -2342,7 +2458,7 @@
         
         <div id="gb-combo-panel" style="display:none;">
           <label style="color:#888;">🔥 КОМБО (задержка ${comboDelay}мс)</label>
-          <div id="gb-combo-list" style="margin-top:6px; max-height:500px; overflow-y:auto;"></div>
+          <div id="gb-combo-list" style="margin-top:6px;"></div>
         </div>
       </div>
     `;
@@ -2390,9 +2506,13 @@
     c.querySelector("#gb-minimize").onclick = () => {
       const content = c.querySelector("#gb-content");
       content.style.display = content.style.display === "none" ? "block" : "none";
+      c.style.height = content.style.display === "none" ? "auto" : "70vh";
     };
     c.querySelector("#gb-settings-btn").onclick = () => {
       createSettingsPopup();
+      document.getElementById('auto-inventory').checked = autoInventoryEnabled;
+      document.getElementById('inventory-item').value = inventoryItemId;
+      document.getElementById('inventory-item').disabled = inventoryBusy;
       document.getElementById("heal-path-input").value = healPath;
       document.getElementById("heal-back-input").value = healPathBack;
       document.getElementById("surrender-enemies-input").value = surrenderEnemyIds;
@@ -2594,6 +2714,7 @@
     if (auto) ensureWildMonstersEnabled();
     setInterval(createUI, 2000);
     setInterval(mainLoop, 500);
+    setInterval(autoInventoryTick, 1000);
     setInterval(autoAdTick, 1000);
     console.log("%c✅ Бот готов!", "color: #2ecc71; font-size: 12px");
   }
